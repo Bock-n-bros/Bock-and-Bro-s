@@ -6,6 +6,7 @@ import csv
 from pathlib import Path
 
 import bcrypt
+import db
 
 
 VENUE_TYPES = {"bar", "cervejaria", "pub", "rooftop", "café", "sports bar"}
@@ -22,6 +23,14 @@ class AuthResult:
     success: bool
     message: str
     user: dict | None = None
+
+
+@dataclass
+class ReviewResult:
+    """Describe the outcome of submitting a review."""
+
+    success: bool
+    message: str
 
 
 def register_user(database, username, password, password_repeat, role, age_confirmed):
@@ -60,7 +69,77 @@ def login_user(database, username, password, now=None):
         database.update_login_state(user["username"], failures, locked_until)
         return AuthResult(False, "Wrong username or password.")
     database.update_login_state(user["username"], 0, None)
-    return AuthResult(True, "Logged in.", {"username": user["username"], "role": user["role"]})
+    return AuthResult(True, "Logged in.", {
+        "id": user["id"], "username": user["username"], "role": user["role"]
+    })
+
+
+def initialize_app_data():
+    """Initialize storage and load demo venues when needed."""
+    db.init_db()
+    return load_venues(db, Path(__file__).resolve().parent / "data" / "venues.csv")
+
+
+def authenticate_user(username, password, now=None):
+    """Authenticate through the application's configured database."""
+    return login_user(db, username, password, now=now)
+
+
+def create_account(username, password, password_repeat, role, age_confirmed):
+    """Register an account through the application's configured database."""
+    return register_user(db, username, password, password_repeat, role, age_confirmed)
+
+
+def get_venue(venue_id):
+    """Fetch one venue for a screen."""
+    return db.get_venue_by_id(venue_id)
+
+
+def get_venues():
+    """Fetch all venues for a screen."""
+    return db.get_all_venues()
+
+
+def get_venue_review_summary(venue_id):
+    """Fetch a venue's review summary for a screen."""
+    return db.get_review_summary(venue_id)
+
+
+def get_customer_review(user_id, venue_id):
+    """Fetch the current customer's review for a venue."""
+    return db.get_user_review(user_id, venue_id)
+
+
+def get_venue_reviews(venue_id):
+    """Fetch a venue's reviews for display."""
+    return db.get_reviews_for_venue(venue_id)
+
+
+def find_app_venues(**filters):
+    """Find and sort venues through the configured database."""
+    return find_venues(db, **filters)
+
+
+def submit_app_review(user, venue_id, atmosphere, value, quality,
+                      super_bock_price=None, comment=None, now=None):
+    """Submit the current user's review through the configured database."""
+    return submit_review(db, user, venue_id, atmosphere, value, quality,
+                         super_bock_price, comment, now=now)
+
+
+def has_valid_session_user(user):
+    """Check that a saved session has the identity fields used by screens."""
+    return (isinstance(user, dict) and user.get("role") in {"customer", "business"}
+            and user.get("id") is not None and user.get("username"))
+
+
+def format_review_date(review):
+    """Format review creation or update time for display."""
+    created = datetime.fromisoformat(review["created_at"])
+    updated = datetime.fromisoformat(review["updated_at"])
+    if updated > created:
+        return f"Updated {updated.day} {updated.strftime('%b %Y')}"
+    return f"{created.day} {created.strftime('%b %Y')}"
 
 
 def _timestamp(now):
@@ -148,17 +227,62 @@ def load_venues(database, csv_path):
     return len(venues)
 
 
-def find_venues(database, neighbourhood="All", venue_type="All", shows_football=False, search=""):
-    """Return venues matching the selected filters, sorted by name."""
+def find_venues(database, neighbourhood="All", venue_type="All", shows_football=False, search="", sort_by="name"):
+    """Return filtered venues in the selected order."""
     venues = database.get_all_venues()
     query = search.strip().casefold() if isinstance(search, str) else ""
-    return [
+    matches = [
         venue for venue in venues
         if (neighbourhood == "All" or venue["neighbourhood"] == neighbourhood)
         and (venue_type == "All" or venue["venue_type"] == venue_type)
         and (not shows_football or venue["shows_football"] == "yes")
         and (not query or query in venue["name"].casefold())
     ]
+    return sort_venues(matches, database, sort_by)
+
+
+def submit_review(database, user, venue_id, atmosphere, value, quality,
+                  super_bock_price=None, comment=None, now=None):
+    """Check review permission and input, then save or update the review."""
+    if not isinstance(user, dict) or user.get("role") != "customer" or not user.get("id"):
+        return ReviewResult(False, "Only logged-in customers can submit reviews.")
+    if database.get_venue_by_id(venue_id) is None:
+        return ReviewResult(False, "That venue could not be found.")
+    for label, score in (("Atmosphere", atmosphere), ("Value", value), ("Quality", quality)):
+        if isinstance(score, bool) or not isinstance(score, int) or not 1 <= score <= 5:
+            return ReviewResult(False, f"{label} must be a whole number from 1 to 5.")
+    if super_bock_price is not None:
+        if isinstance(super_bock_price, bool) or not isinstance(super_bock_price, (int, float)) or not 0.5 <= super_bock_price <= 10:
+            return ReviewResult(False, "Super Bock price must be between €0.50 and €10.00.")
+        super_bock_price = round(float(super_bock_price), 2)
+    if comment is not None:
+        if not isinstance(comment, str) or len(comment) > 500:
+            return ReviewResult(False, "Comment must be 500 characters or fewer.")
+        comment = comment.strip() or None
+    database.save_review(venue_id, user["id"], {
+        "atmosphere": atmosphere, "value": value, "quality": quality,
+        "super_bock_price": super_bock_price, "comment": comment,
+    }, now=now)
+    return ReviewResult(True, "Review saved.")
+
+
+def sort_venues(venues, database, sort_by="name"):
+    """Sort venues by name or a review summary, keeping missing data last."""
+    if sort_by not in {"name", "overall", "atmosphere", "price", "reviews"}:
+        sort_by = "name"
+    if sort_by == "name":
+        return sorted(venues, key=lambda venue: venue["name"].casefold())
+    summaries = {venue["id"]: database.get_review_summary(venue["id"]) for venue in venues}
+    key_name = {"overall": "overall", "atmosphere": "atmosphere", "price": "average_super_bock_price",
+                "reviews": "review_count"}[sort_by]
+    def ordering(venue):
+        summary = summaries[venue["id"]]
+        metric = summary[key_name]
+        missing = metric is None or (sort_by == "reviews" and metric == 0)
+        descending = sort_by != "price"
+        return (missing, -metric if metric is not None and descending else metric or 0,
+                venue["name"].casefold())
+    return sorted(venues, key=ordering)
 
 
 def can_view_venues(user):

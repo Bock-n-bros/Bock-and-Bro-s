@@ -36,6 +36,59 @@ def init_db():
                 locked_until INTEGER
             )"""
         )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS venues (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                neighbourhood TEXT NOT NULL,
+                address TEXT NOT NULL,
+                venue_type TEXT NOT NULL,
+                shows_football TEXT NOT NULL,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                description TEXT NOT NULL
+            )"""
+        )
+
+
+def insert_venue(venue):
+    """Save a venue and return its identifier."""
+    init_db()
+    with _connect() as connection:
+        cursor = connection.execute(
+            "INSERT INTO venues (name, neighbourhood, address, venue_type, shows_football, latitude, longitude, description) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                venue["name"], venue["neighbourhood"], venue["address"], venue["venue_type"],
+                venue["shows_football"], venue["latitude"], venue["longitude"], venue["description"],
+            ),
+        )
+        return cursor.lastrowid
+
+
+def count_venues():
+    """Return the number of stored venues."""
+    init_db()
+    with _connect() as connection:
+        return connection.execute("SELECT COUNT(*) FROM venues").fetchone()[0]
+
+
+def get_all_venues():
+    """Return every stored venue as a dictionary."""
+    init_db()
+    with _connect() as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute("SELECT * FROM venues ORDER BY name").fetchall()
+        return [dict(row) for row in rows]
+
+
+def get_venue_by_id(venue_id):
+    """Find one venue by its identifier."""
+    init_db()
+    with _connect() as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute("SELECT * FROM venues WHERE id = ?", (venue_id,)).fetchone()
+        return dict(row) if row else None
 
 
 def create_user(username, password_hash, role):

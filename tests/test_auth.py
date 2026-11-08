@@ -94,6 +94,8 @@ def test_login_succeeds_for_each_role(user_db, role):
     assert register(user_db, role=role).success
     result = logic.login_user(user_db, "BroUser", "password1")
     assert result.success
+    assert set(result.user) >= {"id", "username", "role"}
+    assert result.user["id"] == user_db.get_user_by_username("BroUser")["id"]
     assert result.user["role"] == role
 
 

@@ -5,7 +5,11 @@ import streamlit as st
 import logic
 
 
-logic.initialize_app_data()
+try:
+    logic.initialize_app_data()
+except RuntimeError as error:
+    st.error(str(error))
+    st.stop()
 st.title("Bock'n Bros")
 
 saved_user = st.session_state.get("user")

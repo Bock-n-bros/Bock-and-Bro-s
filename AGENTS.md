@@ -45,7 +45,7 @@ swap the database later.
 
 ## Database rules
 
-- All SQL lives in `db.py`. No other file imports `sqlite3`.
+- All SQL lives in `db.py`. No other file imports `sqlite3` or `psycopg`.
 - Always use parameterized queries (`?` placeholders). Never build SQL with f-strings
   or string concatenation.
 - Write plain, portable SQL that would also work on Postgres where reasonable

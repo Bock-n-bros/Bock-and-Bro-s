@@ -12,4 +12,8 @@ def tmp_path(request):
     with tempfile.TemporaryDirectory(
         prefix="test-", dir=Path(__file__).resolve().parents[1]
     ) as directory:
-        yield Path(directory)
+        try:
+            yield Path(directory)
+        finally:
+            import db
+            db.close_connection()

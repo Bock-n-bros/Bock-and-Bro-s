@@ -115,21 +115,54 @@ def render_map(venues):
                 f"{directions_query}&travelmode=walking",
             )
 
-saved_user = st.session_state.get("user")
-if saved_user is not None and not logic.has_valid_session_user(saved_user):
-    st.session_state.pop("user", None)
-    st.session_state.pop("venue_id", None)
-    st.warning("Your session is out of date. Please log in again.")
+def google_auth_is_configured():
+    """Return whether the required Streamlit auth settings are available."""
+    try:
+        auth = st.secrets.get("auth")
+    except Exception:
+        return False
+    required = {"redirect_uri", "cookie_secret", "client_id", "client_secret", "server_metadata_url"}
+    return auth is not None and required.issubset(auth)
 
-if logic.can_view_venues(st.session_state.get("user")):
-    user = st.session_state.user
+
+if not google_auth_is_configured():
+    st.write("Find Lisbon bars and cafés, rate venues, and meet up for a beer.")
+    st.warning("Google login is not set up — see README")
+    st.stop()
+
+if not st.user.is_logged_in:
+    st.write("Find Lisbon bars and cafés, rate venues, and meet up for a beer.")
+    if st.button("Log in with Google"):
+        st.login()
+    st.stop()
+
+user = logic.find_app_google_user(st.user.sub)
+if user is None:
+    st.header("Finish your profile")
+    with st.form("profile_form"):
+        username = st.text_input("Username")
+        role_label = st.radio("Account type", ["Customer", "Bar owner"])
+        age_confirmed = st.checkbox("I confirm I am 18 or older")
+        submitted = st.form_submit_button("Finish profile")
+    if submitted:
+        role = "business" if role_label == "Bar owner" else "customer"
+        result = logic.complete_app_profile(
+            st.user.sub, st.user.email, username, role, age_confirmed
+        )
+        if result.success:
+            st.rerun()
+        st.error(result.message)
+    if st.button("Log out", key="profile-logout"):
+        st.logout()
+    st.stop()
+
+if logic.can_view_venues(user):
     with st.sidebar:
         st.write(user["username"])
         st.write(f"Role: {user['role'].title()}")
         if st.button("Log out"):
-            del st.session_state["user"]
             st.session_state.pop("venue_id", None)
-            st.rerun()
+            st.logout()
 
     if st.session_state.get("venue_id") is not None:
         selected = logic.get_venue(st.session_state.venue_id)
@@ -226,32 +259,3 @@ if logic.can_view_venues(st.session_state.get("user")):
                     if button_col.button("View", key=f"venue-{venue['id']}"):
                         st.session_state.venue_id = venue["id"]
                         st.rerun()
-else:
-    login_tab, signup_tab = st.tabs(["Log in", "Sign up"])
-    with login_tab:
-        with st.form("login_form"):
-            username = st.text_input("Username", key="login_username")
-            password = st.text_input("Password", type="password", key="login_password")
-            submitted = st.form_submit_button("Log in")
-        if submitted:
-            result = logic.authenticate_user(username, password)
-            if result.success:
-                st.session_state.user = result.user
-                st.rerun()
-            st.error(result.message)
-    with signup_tab:
-        with st.form("signup_form"):
-            username = st.text_input("Username", key="signup_username")
-            password = st.text_input("Password", type="password", key="signup_password")
-            password_repeat = st.text_input("Repeat password", type="password", key="signup_repeat")
-            role_label = st.radio("Account type", ["Customer", "Business"])
-            age_confirmed = st.checkbox("I confirm I am 18 or older")
-            submitted = st.form_submit_button("Sign up")
-        if submitted:
-            result = logic.create_account(
-                username, password, password_repeat, role_label.lower(), age_confirmed
-            )
-            if result.success:
-                st.success(result.message)
-            else:
-                st.error(result.message)

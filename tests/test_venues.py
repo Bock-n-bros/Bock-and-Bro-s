@@ -126,7 +126,9 @@ def test_skips_venue_names_that_match_case_insensitively(venue_db, tmp_path):
 
 def test_seeding_preserves_reviews_for_existing_venue(venue_db, tmp_path):
     venue_id = venue_db.insert_venue(venue("Pensão Amor"))
-    user_id = venue_db.create_user("reviewer", "not-a-real-password-hash", "customer")
+    user_id = venue_db.create_user(
+        "venue-reviewer-sub", "reviewer@example.com", "reviewer", "customer"
+    )
     values = {
         "atmosphere": 5, "value": 4, "quality": 5,
         "super_bock_price": 2.5, "comment": "Keep this review",

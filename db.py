@@ -28,13 +28,12 @@ def init_db():
         connection.execute(
             """CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY,
+                google_sub TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
                 username TEXT NOT NULL,
                 username_key TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
                 role TEXT NOT NULL CHECK (role IN ('customer', 'business')),
-                created_at TEXT NOT NULL,
-                failed_attempts INTEGER NOT NULL DEFAULT 0,
-                locked_until INTEGER
+                created_at TEXT NOT NULL
             )"""
         )
         connection.execute(
@@ -190,16 +189,29 @@ def _iso_timestamp(now):
     return str(now)
 
 
-def create_user(username, password_hash, role):
-    """Save a user account and return its identifier."""
+def create_user(google_sub, email, username, role):
+    """Save a Google profile and return its identifier."""
     init_db()
     with _connect() as connection:
         cursor = connection.execute(
-            "INSERT INTO users (username, username_key, password_hash, role, created_at) "
-            "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-            (username, username.casefold(), password_hash, role),
+            "INSERT INTO users (google_sub, email, username, username_key, role, created_at) "
+            "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (google_sub, email, username, username.casefold(), role),
         )
         return cursor.lastrowid
+
+
+def get_user_by_google_sub(google_sub):
+    """Find a profile by its stable Google subject identifier."""
+    init_db()
+    with _connect() as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT id, google_sub, email, username, username_key, role, created_at "
+            "FROM users WHERE google_sub = ?",
+            (google_sub,),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def get_user_by_username(username):
@@ -208,24 +220,15 @@ def get_user_by_username(username):
     with _connect() as connection:
         connection.row_factory = sqlite3.Row
         row = connection.execute(
-            "SELECT id, username, password_hash, role, created_at, failed_attempts, locked_until "
+            "SELECT id, google_sub, email, username, username_key, role, created_at "
             "FROM users WHERE username_key = ?",
             (username.casefold(),),
         ).fetchone()
         return dict(row) if row else None
 
 
-def update_login_state(username, failed_attempts, locked_until):
-    """Save the latest failed-login count and lock expiry."""
-    with _connect() as connection:
-        connection.execute(
-            "UPDATE users SET failed_attempts = ?, locked_until = ? WHERE username_key = ?",
-            (failed_attempts, locked_until, username.casefold()),
-        )
-
-
 def list_users():
-    """Return users for test assertions without exposing account secrets."""
+    """Return users for test assertions without exposing email addresses."""
     init_db()
     with _connect() as connection:
         connection.row_factory = sqlite3.Row

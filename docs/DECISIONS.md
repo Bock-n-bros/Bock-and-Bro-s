@@ -1,0 +1,192 @@
+# Decision log — Bock'n Bros
+
+Every decision about the code that the team may be asked about in the walkthrough.
+Each entry answers four questions: **what** we decided, **why**, **instead of** what,
+and **where** it lives. New entries go at the bottom. Nothing is deleted: a reversed
+decision gets "Replaced by D-0xx".
+
+---
+
+## Before the login work
+
+Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
+
+| ID | What | Why |
+| --- | --- | --- |
+| D-001 | Python + uv, Streamlit, SQLite, pytest | Course stack; one language; nothing to install besides uv |
+| D-002 | Three layers: `app.py` screens → `logic.py` rules → `db.py` storage | Each part explainable alone; rules testable without a browser; database swap touches one file |
+| D-003 | All SQL in `db.py`, always with `?` placeholders | Blocks SQL injection |
+| D-004 | SQLite now, Supabase Postgres when deployed | No setup while building; a deployed app needs a database that survives restarts |
+| D-005 | Tables created automatically on startup | A new member runs the app and it works. Changing a table needs the local database deleted once |
+| D-006 | Spec first, Codex proposes tests, team approves, then code | The team decides what "working" means, not the AI |
+| D-007 | Venues loaded from `data/venues.csv`; bad rows skipped and reported | Editable in Excel; restarts never duplicate venues |
+| D-008 | One review per user per venue, enforced by the database too | Nobody can inflate a score, even if the logic has a bug |
+| D-009 | Permissions checked in `logic.py`, not only by hiding buttons | A hidden button is not security |
+| D-010 | Scores 1–5; Super Bock price €0.50–€10.00; comment max 500 characters | Keeps averages and price sorting meaningful |
+| D-011 | No reviews = "No reviews yet", not 0, and sorted last | A 0 would look like a bad venue, not an unknown one |
+| D-012 | Comments shown as plain text (`st.text`) | Users cannot inject links or scripts |
+
+---
+
+## Login: Google instead of passwords (Montero)
+
+### D-013 · Google login replaces username and password
+*18 Nov 2026 · team meeting*
+
+- **What:** users log in with their Google account. The password login from spec 01 goes.
+- **Why:** we store no passwords, so none can leak. Google handles brute-force attacks, two-factor and password resets.
+- **Instead of:** keeping username and password with bcrypt (spec 01), which means defending our own password storage and lockout.
+- **Where:** spec 04 (to be written in step 5).
+
+### D-014 · One Google Cloud project for the team, no billing
+*18 Nov 2026 · step 2*
+
+- **What:** the Google login is registered in a Google Cloud project called "Bock n Bros", with no credit card or billing account. All team members have the Admin role, so the login does not depend on one person.
+- **Why:** Google needs to know our app before it lets users log in to it. Login is free, so billing would only add risk.
+- **Instead of:** each member making their own project, which would mean four sets of keys and logins that differ per laptop.
+- **Where:** console.cloud.google.com, outside the code.
+
+
+### D-015 · Login open to any Google account ("External")
+*18 Nov 2026 · step 2*
+
+- **What:** the login screen is set to "External", so any Google account can log in, not only one organisation's.
+- **Why:** customers and bars use personal Gmail accounts. "Internal" only works inside one Google Workspace organisation.
+- **Instead of:** "Internal".
+- **Where:** Google Auth Platform → Audience.
+
+### D-016 · Testing mode while building, published before the demo
+*18 Nov 2026 · step 2*
+
+- **What:** the Google login stays in "Testing", where only listed test users (the team) can log in. It is published before the presentation.
+- **Why:** nobody outside the team can log in to a half-built app. In Testing mode the examiners could not log in, so it must be published before the demo.
+- **Instead of:** publishing now, which opens the login to anyone while the app is unfinished.
+- **Where:** Google Auth Platform → Audience → Test users.
+
+### D-017 · "Bar owner" on screen, `business` in the database
+*18 Nov 2026 · step 2*
+
+- **What:** the profile form offers "Customer" or "Bar owner". "Bar owner" is stored as the role `business`.
+- **Why:** "Bar owner" is clearer for users. Keeping the stored value means the review rules and teammates' code need no change.
+- **Instead of:** renaming the role to `bar_owner` everywhere, which touches every feature for no gain.
+- **Where:** spec 04, profile form in `app.py`.
+
+### D-018 · Bar owners are self-declared for now; admin approval later
+*18 Nov 2026 · step 2*
+
+- **What:** anyone can choose "Bar owner" when signing up. Nothing checks yet that they run a bar.
+- **Why:** login only needs to know the role. Checking ownership needs an admin role and a link from each owner to one venue, which is a separate feature.
+- **Instead of:** building admin approval now, which would make the login PR large and block the team.
+- **Where:** known limitation. Planned: a later spec where an admin approves each bar owner and links them to their venue, before bar owners can post offers or reply to reviews.
+
+### D-019 · Client secret kept out of Git; local address only for now
+*18 Nov 2026 · step 2*
+
+- **What:** the Google client ID and secret are stored privately and shared only by private message. Google accepts logins that return to `http://localhost:8501/oauth2callback` only. The deployed address is added when the app is deployed.
+- **Why:** anyone with the secret could pretend to be our app. Google sends users back only to addresses we listed, so a fake site cannot receive their login.
+- **Instead of:** committing the secret to the repo, or listing addresses we do not use yet.
+- **Where:** Google Auth Platform → Clients. In the code: `.streamlit/secrets.toml` (step 3), which Git ignores.
+
+### D-020 · A random cookie secret, stored with the Google values
+*18 Nov 2026 · step 3*
+
+- **What:** `.streamlit/secrets.toml` holds the Google client ID and secret plus a random 64-character cookie secret made with Python's `secrets` module. Git ignores the file.
+- **Why:** after login, Streamlit keeps the user's identity in a cookie signed with this secret. Without it, nobody can forge a cookie that says they are someone else.
+- **Instead of:** a made-up password such as "bocknbros123", which can be guessed.
+- **Where:** `.streamlit/secrets.toml` on each member's computer, never in the repo.
+
+### D-021 · Login is built on its own branch and merged first
+*18 Nov 2026 · step 4*
+
+- **What:** all login work happens on the branch `google-login` and reaches `main` through one pull request, reviewed by a teammate. It is merged before the other features.
+- **Why:** `main` always works while login is half-built. Login changes the users table and the top of `app.py`, which every feature uses, so merging it first means conflicts appear once, early.
+- **Instead of:** working directly on `main`, or merging login last, when every other branch would conflict with it.
+- **Where:** GitHub, branch `google-login`.
+
+### D-022 · The decision log is a rule in AGENTS.md
+*18 Nov 2026 · step 5*
+
+- **What:** AGENTS.md tells every Codex session to add an entry to `docs/DECISIONS.md` after each task.
+- **Why:** every member is asked about code they did not write. One log written as the work happens is easier to learn than reading all the code.
+- **Instead of:** writing the log from memory before the presentation, when the reasons are forgotten.
+- **Where:** `AGENTS.md`, section "Decision log".
+
+### D-023 · Rules are tested automatically; login screens are checked by hand
+*18 Nov 2026 · step 6*
+
+- **What:** pytest tests every rule in `logic.py` and `db.py` with fake Google ids. The screens (Google button, profile form, logout, missing-secrets message) are checked by hand against the spec's "Done when" list.
+- **Why:** a test cannot log in to Google. The rules are where mistakes would let the wrong person in, so they get the automatic tests.
+- **Instead of:** faking Google inside the tests, which adds complex code that tests our fake rather than our app.
+- **Where:** `tests/test_auth.py`, `tests/test_reviews.py`; manual list in `specs/04-google-login.md`.
+
+### D-024 · Only the Streamlit auth extra replaces bcrypt
+*18 Nov 2026 · step 7*
+
+- **What:** the project uses `streamlit[auth]` and removes `bcrypt`.
+- **Why:** `st.login` only works with the `streamlit[auth]` extra, which installs Authlib. bcrypt hashed passwords, and the app no longer has any.
+- **Instead of:** adding a direct Authlib dependency or keeping password hashing in the app.
+- **Where:** `pyproject.toml` and `uv.lock`.
+
+### D-025 · The users schema follows the new profile shape without a migration
+*18 Nov 2026 · step 7*
+
+- **What:** `db.py` creates users with Google subject, email, username, username key, role, and creation time only.
+- **Why:** the spec explicitly asks the team to delete the local database once, so migration code would add work outside the feature.
+- **Instead of:** converting old password and lockout columns at startup.
+- **Where:** `db.py` users table and the setup note in `README.md`.
+
+### D-026 · App authentication stays behind logic wrappers
+*18 Nov 2026 · step 7*
+
+- **What:** `app.py` never talks to the database. It gives Google's id and email to two small functions in `logic.py` (`find_app_google_user`, `complete_app_profile`), which call `db.py`.
+- **Why:** keeps the three-layer rule (D-002), so the login rules can be tested without a browser.
+- **Instead of:** `app.py` calling `db.py` directly.
+- **Where:** `app.py` and `logic.py`.
+
+### D-027 · Missing auth settings show a setup warning
+*18 Nov 2026 · step 7*
+
+- **What:** the app checks the required `[auth]` keys and shows "Google login is not set up — see README" when they are unavailable.
+- **Why:** an unfinished local setup should be understandable instead of raising a configuration exception.
+- **Instead of:** letting `st.login()` fail with a raw Streamlit error.
+- **Where:** `app.py` and `.streamlit/secrets.toml.example`.
+
+### D-028 · Review rows expose usernames but not reviewer emails
+*18 Nov 2026 · step 7*
+
+- **What:** venue review results include the reviewer's username and omit their Google email.
+- **Why:** users need an identifiable display name, but email is private account data.
+- **Instead of:** selecting all user columns when joining reviews.
+- **Where:** `db.py` review query and `tests/test_reviews.py`.
+
+### D-029 · Users are identified by Google's `sub`, not their email
+*18 Nov 2026 · step 7*
+
+- **What:** each user row stores `google_sub`, Google's permanent id for the account, and the app finds users by it. The email is stored but never shown.
+- **Why:** an email address can change; `sub` never does, so a user keeps their profile and reviews.
+- **Instead of:** using the email as the key.
+- **Where:** `db.get_user_by_google_sub`, `users` table.
+
+### D-030 · The logged-in user stays {id, username, role}
+*18 Nov 2026 · step 7*
+
+- **What:** `logic.find_google_user` returns only id, username and role, the same shape as the old password login.
+- **Why:** reviews and the team's chat, leaderboard and map use this dictionary, so none of them needed changes.
+- **Instead of:** passing Google's full user data around, which would expose the email and break other features.
+- **Where:** `logic.find_google_user`.
+
+### D-031 · First login asks for username, role and 18+
+*18 Nov 2026 · step 7*
+
+- **What:** a Google account without a profile sees "Finish your profile". `logic.complete_profile` checks the username rules, that the name is free, the role and the 18+ box before saving.
+- **Why:** Google knows neither our roles nor a public name, and showing real Google names publicly is a privacy problem. The rules from spec 01 stay.
+- **Instead of:** using the Google name and making everyone a customer.
+- **Where:** profile form in `app.py`, `logic.complete_profile`.
+
+### D-032 · The login is read from Streamlit's signed cookie on every page load
+*18 Nov 2026 · step 7*
+
+- **What:** `app.py` reads `st.user` and loads the user from the database by `sub` on every rerun. The login is no longer copied into `st.session_state`.
+- **Why:** one source of truth that users cannot edit. The old "session out of date" check is no longer needed.
+- **Instead of:** storing the user in session state at login, as the password version did.
+- **Where:** top of `app.py`.

@@ -17,6 +17,9 @@ from `logic.find_google_user` unchanged.
 - A `follows` table with: follower_id, followed_id (both REFERENCES users(id)),
   created_at. Primary key / unique constraint on (follower_id, followed_id), so the
   same follow can never exist twice.
+- `users.image_id` optionally references `images.id` for the user's profile picture.
+- Profile pictures use the existing `images` storage and validation: JPEG or PNG,
+  maximum upload size 5 MB, resized to at most 400 pixels wide.
 - Functions to: add a follow, remove a follow, check whether A follows B, list the ids
   a user follows, count followers and following for a user, search users by username
   (case-insensitive "contains", at most 20 results, without email), fetch a user by id
@@ -44,11 +47,16 @@ from `logic.find_google_user` unchanged.
   (Feed and Messages are filled in by specs 06 and 08; until then they show
   "Coming soon").
 - **People:** a search box for usernames and a list of matches with a **View profile**
-  button. Bar owners are marked "Bar owner".
+  button. Business profiles show the text badge "Bar". Search uses usernames only;
+  email addresses are private and never searchable.
 - **Profile page (Instagram-style):** username, "Bar owner" and "Follows you" labels,
   four counts (Friends, Followers, Following, Bars), **Follow** / **Unfollow** and
   **Message** buttons (not on your own profile), and four tabs listing the people/bars;
-  each person opens their profile, each bar opens the venue page.
+  each person opens their profile, each bar opens the venue page. On your own profile,
+  users can upload, replace or remove their profile picture.
+- Profile pictures appear by the username in profiles, next to feed posts, in People
+  results and in conversation lists. Without a picture, a circular badge shows the
+  first username letter; no external image service is used.
 - **Venue page:** follower count and a **Follow bar** / **Unfollow bar** button. A **My profile** link in the sidebar opens your own profile.
 - Usernames are shown as plain text.
 
@@ -56,7 +64,7 @@ from `logic.find_google_user` unchanged.
 
 - Private accounts and follow requests (all profiles are public)
 - Blocking users
-- Profile pictures and bios
+- Bios
 - Linking a bar owner to a specific venue (later admin spec)
 
 ## Done when
@@ -68,4 +76,8 @@ from `logic.find_google_user` unchanged.
 - [ ] Following yourself is refused in `logic.py`, not only by hiding the button.
 - [ ] Unfollow works and the count goes down.
 - [ ] The Google email never appears on any page or in any search result.
+- [ ] People search returns usernames only and does not match email addresses.
+- [ ] Business users show a textual "Bar" badge in People results; customers do not.
+- [ ] Profile pictures can be uploaded, replaced and removed, and appear in profile,
+      feed, People and conversation lists; no picture shows a circular username initial.
 - [ ] Still no file other than `db.py` imports `sqlite3`.

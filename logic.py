@@ -77,6 +77,14 @@ class LikeResult:
     liked: bool = False
 
 
+@dataclass
+class ProfilePictureResult:
+    """Describe the outcome of changing a profile picture."""
+
+    success: bool
+    message: str
+
+
 MAX_POST_LENGTH = 500
 IMAGE_TYPES = ["jpg", "jpeg", "png"]
 MAX_MESSAGE_LENGTH = 1000
@@ -470,6 +478,7 @@ def get_profile(database, viewer, user_id):
         "id": person["id"],
         "username": person["username"],
         "role": person["role"],
+        "image_id": person["image_id"],
         "is_me": person["id"] == viewer["id"],
         "is_followed_by_me": database.is_following(viewer["id"], user_id),
         "follows_me": database.is_following(user_id, viewer["id"]),
@@ -479,6 +488,37 @@ def get_profile(database, viewer, user_id):
         "following": following,
         "bars": database.get_followed_venues(user_id),
     }
+
+
+def set_profile_picture(database, user, image_bytes, image_name, now=None):
+    """Validate and save a profile picture for the signed-in user."""
+    if not _is_logged_in(user):
+        return ProfilePictureResult(False, "Log in to change your profile picture.")
+    try:
+        image_id = database.set_profile_image(user["id"], image_bytes, image_name, now=now)
+    except (TypeError, ValueError) as error:
+        return ProfilePictureResult(False, str(error))
+    if image_id is None:
+        return ProfilePictureResult(False, "That user could not be found.")
+    return ProfilePictureResult(True, "Profile picture saved.")
+
+
+def remove_profile_picture(database, user):
+    """Remove the signed-in user's profile picture."""
+    if not _is_logged_in(user):
+        return ProfilePictureResult(False, "Log in to change your profile picture.")
+    if not database.remove_profile_image(user["id"]):
+        return ProfilePictureResult(False, "That user could not be found.")
+    return ProfilePictureResult(True, "Profile picture removed.")
+
+
+def get_profile_avatar(database, person):
+    """Return a user's image data or their initial for a fallback avatar."""
+    image = database.get_image(person.get("image_id")) if person.get("image_id") else None
+    if image:
+        return {"bytes": image["bytes"], "mime_type": image["mime_type"], "initial": None}
+    username = person.get("username", "?").strip()
+    return {"bytes": None, "mime_type": None, "initial": username[:1].upper() or "?"}
 
 
 def get_venue_follow_status(database, user, venue_id):
@@ -512,6 +552,21 @@ def get_app_profile(viewer, user_id):
     return get_profile(db, viewer, user_id)
 
 
+def get_app_profile_avatar(person):
+    """Read a profile image through the configured database."""
+    return get_profile_avatar(db, person)
+
+
+def set_app_profile_picture(user, image_bytes, image_name):
+    """Save a profile image through the configured database."""
+    return set_profile_picture(db, user, image_bytes, image_name)
+
+
+def remove_app_profile_picture(user):
+    """Remove a profile image through the configured database."""
+    return remove_profile_picture(db, user)
+
+
 def get_app_venue_follow_status(user, venue_id):
     """Read a venue's follow status through the configured database."""
     return get_venue_follow_status(db, user, venue_id)
@@ -542,7 +597,11 @@ def get_feed(database, user):
     """Return the user's feed: own posts, people they follow and bars they follow."""
     if not _is_logged_in(user):
         return []
-    posts = database.get_feed_posts(user["id"])
+    return _add_like_details(database, database.get_feed_posts(user["id"]), user)
+
+
+def _add_like_details(database, posts, user):
+    """Attach each post's like count and the viewer's state."""
     likes = database.get_likes_for_posts(post["id"] for post in posts)
     counts = {}
     liked_ids = set()
@@ -556,14 +615,16 @@ def get_feed(database, user):
     return posts
 
 
-def get_venue_posts(database, venue_id):
+def get_venue_posts(database, venue_id, user=None):
     """Return all posts about a venue."""
-    return database.get_venue_posts(venue_id)
+    posts = database.get_venue_posts(venue_id)
+    return _add_like_details(database, posts, user) if _is_logged_in(user) else posts
 
 
-def get_user_posts(database, user_id):
+def get_user_posts(database, user_id, viewer=None):
     """Return all posts written by a user."""
-    return database.get_user_posts(user_id)
+    posts = database.get_user_posts(user_id)
+    return _add_like_details(database, posts, viewer) if _is_logged_in(viewer) else posts
 
 
 def add_comment(database, user, post_id, text, now=None):
@@ -632,14 +693,14 @@ def get_app_feed(user):
     return get_feed(db, user)
 
 
-def get_app_venue_posts(venue_id):
+def get_app_venue_posts(venue_id, user=None):
     """Read a venue's posts through the configured database."""
-    return get_venue_posts(db, venue_id)
+    return get_venue_posts(db, venue_id, user)
 
 
-def get_app_user_posts(user_id):
+def get_app_user_posts(user_id, viewer=None):
     """Read a user's posts through the configured database."""
-    return get_user_posts(db, user_id)
+    return get_user_posts(db, user_id, viewer)
 
 
 def get_app_post_image(post):

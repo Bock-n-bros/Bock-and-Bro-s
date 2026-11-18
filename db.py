@@ -138,10 +138,15 @@ def _table_statements(backend):
     identity = "INTEGER PRIMARY KEY AUTOINCREMENT" if backend == "sqlite" else "INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY"
     image_bytes_type = "BLOB" if backend == "sqlite" else "BYTEA"
     return [
+        f"""CREATE TABLE IF NOT EXISTS images (
+            id {identity}, bytes {image_bytes_type} NOT NULL, mime_type TEXT NOT NULL,
+            byte_size INTEGER NOT NULL, created_at TEXT NOT NULL
+        )""",
         f"""CREATE TABLE IF NOT EXISTS users (
             id {identity}, google_sub TEXT NOT NULL UNIQUE, email TEXT NOT NULL,
             username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE,
-            role TEXT NOT NULL CHECK (role IN ('customer', 'business')), created_at TEXT NOT NULL
+            role TEXT NOT NULL CHECK (role IN ('customer', 'business')),
+            image_id INTEGER REFERENCES images(id), created_at TEXT NOT NULL
         )""",
         f"""CREATE TABLE IF NOT EXISTS venues (
             id {identity}, name TEXT NOT NULL, neighbourhood TEXT NOT NULL, address TEXT NOT NULL,
@@ -153,10 +158,6 @@ def _table_statements(backend):
             user_id INTEGER NOT NULL REFERENCES users(id), atmosphere INTEGER NOT NULL,
             value INTEGER NOT NULL, quality INTEGER NOT NULL, super_bock_price REAL, comment TEXT,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (venue_id, user_id)
-        )""",
-        f"""CREATE TABLE IF NOT EXISTS images (
-            id {identity}, bytes {image_bytes_type} NOT NULL, mime_type TEXT NOT NULL,
-            byte_size INTEGER NOT NULL, created_at TEXT NOT NULL
         )""",
         f"""CREATE TABLE IF NOT EXISTS posts (
             id {identity}, user_id INTEGER NOT NULL REFERENCES users(id),
@@ -198,12 +199,25 @@ def init_db():
     """Create application tables and enable Postgres row-level security."""
     backend, _ = _backend()
     with _connect() as connection:
-        tables = ("users", "venues", "reviews", "images", "posts", "comments", "likes", "follows", "venue_follows",
+        tables = ("images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
                   "conversations", "conversation_members", "messages")
         for statement, table in zip(_table_statements(backend), tables):
             _execute(connection, backend, statement)
             if backend == "postgres":
                 _execute(connection, backend, f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+        _ensure_user_image_column(connection, backend)
+
+
+def _ensure_user_image_column(connection, backend):
+    """Add the nullable image reference to users created by an earlier version."""
+    if backend == "sqlite":
+        columns = {row[1] for row in _execute(connection, backend, "PRAGMA table_info(users)").fetchall()}
+    else:
+        columns = {row[0] for row in _execute(connection, backend,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ?", ("users",)).fetchall()}
+    if "image_id" not in columns:
+        _execute(connection, backend, "ALTER TABLE users ADD COLUMN image_id INTEGER REFERENCES images(id)")
 
 
 def _insert(connection, backend, sql, parameters):
@@ -353,8 +367,8 @@ def get_user_by_id(user_id):
     """Find a user's public details without email."""
     backend, _ = _backend()
     with _connect() as connection:
-        row = _execute(connection, backend, "SELECT id, username, role FROM users WHERE id = ?", (user_id,)).fetchone()
-        return _row_dict(row, ("id", "username", "role"))
+        row = _execute(connection, backend, "SELECT id, username, role, image_id FROM users WHERE id = ?", (user_id,)).fetchone()
+        return _row_dict(row, ("id", "username", "role", "image_id"))
 
 
 def list_users():
@@ -428,7 +442,7 @@ def get_messages(conversation_id, limit=100):
 def get_conversations_for_user(user_id):
     """Return a user's conversations and their latest message."""
     cursor = _query("SELECT c.id, c.name, c.is_group, c.created_at, other.id AS other_user_id, "
-        "other.username AS other_username, other.role AS other_role, last.text AS last_message, "
+        "other.username AS other_username, other.role AS other_role, other.image_id AS other_image_id, last.text AS last_message, "
         "last.user_id AS last_sender_id, last.created_at AS last_message_at FROM conversations c "
         "JOIN conversation_members me ON me.conversation_id = c.id AND me.user_id = ? "
         "LEFT JOIN conversation_members om ON om.conversation_id = c.id AND om.user_id <> ? AND c.is_group = 0 "
@@ -445,7 +459,7 @@ def _escape_like(text):
 
 def search_users(text, exclude_user_id=None, limit=20):
     """Search public user details by username."""
-    cursor = _query("SELECT id, username, role FROM users WHERE username_key LIKE ? ESCAPE '\\' "
+    cursor = _query("SELECT id, username, role, image_id FROM users WHERE username_key LIKE ? ESCAPE '\\' "
         "AND id <> ? ORDER BY username_key LIMIT ?",
         (f"%{_escape_like(text.casefold())}%", exclude_user_id or 0, limit))
     return _rows(cursor)
@@ -475,13 +489,13 @@ def is_following(follower_id, followed_id):
 
 def get_followers(user_id):
     """Return followers in username order."""
-    return _rows(_query("SELECT u.id, u.username, u.role FROM follows f JOIN users u ON u.id = f.follower_id "
+    return _rows(_query("SELECT u.id, u.username, u.role, u.image_id FROM follows f JOIN users u ON u.id = f.follower_id "
                         "WHERE f.followed_id = ? ORDER BY u.username_key", (user_id,)))
 
 
 def get_following(user_id):
     """Return followed users in username order."""
-    return _rows(_query("SELECT u.id, u.username, u.role FROM follows f JOIN users u ON u.id = f.followed_id "
+    return _rows(_query("SELECT u.id, u.username, u.role, u.image_id FROM follows f JOIN users u ON u.id = f.followed_id "
                         "WHERE f.follower_id = ? ORDER BY u.username_key", (user_id,)))
 
 
@@ -520,14 +534,14 @@ def count_venue_followers(venue_id):
 
 def _post_query(where, values, limit):
     """Fetch post metadata without loading image contents."""
-    cursor = _query("SELECT p.id, p.user_id, u.username, u.role, p.venue_id, v.name AS venue_name, "
+    cursor = _query("SELECT p.id, p.user_id, u.username, u.role, u.image_id AS author_image_id, p.venue_id, v.name AS venue_name, "
         "p.text, p.image_id, p.created_at FROM posts p JOIN users u ON u.id = p.user_id "
         "JOIN venues v ON v.id = p.venue_id " + where + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?",
         (*values, limit))
     return _rows(cursor)
 
 
-def _prepare_image(data, mime_type):
+def _prepare_image(data, mime_type, max_width=1200):
     """Validate, resize and compress JPEG or PNG input."""
     if len(data) > 5 * 1024 * 1024:
         raise ValueError("Photos can be at most 5 MB.")
@@ -541,8 +555,8 @@ def _prepare_image(data, mime_type):
         image.load()
     except (OSError, Image.DecompressionBombError):
         raise ValueError("That file is not a valid image.") from None
-    if image.width > 1200:
-        image = image.resize((1200, round(image.height * 1200 / image.width)), Image.Resampling.LANCZOS)
+    if image.width > max_width:
+        image = image.resize((max_width, round(image.height * max_width / image.width)), Image.Resampling.LANCZOS)
     output = BytesIO()
     if mime_type == "image/jpeg":
         if image.mode not in ("RGB", "L"):
@@ -579,6 +593,56 @@ def get_post_image(image_id):
         return None
     row = _query("SELECT bytes, mime_type, byte_size, created_at FROM images WHERE id = ?", (image_id,)).fetchone()
     return _row_dict(row, ("bytes", "mime_type", "byte_size", "created_at"))
+
+
+def get_image(image_id):
+    """Fetch a stored image for a post or profile."""
+    return get_post_image(image_id)
+
+
+def get_profile_image_id(user_id):
+    """Return a user's profile image id, if they have one."""
+    row = _query("SELECT image_id FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row[0] if row else None
+
+
+def set_profile_image(user_id, data, image_name, now=None):
+    """Store a resized profile picture and replace the user's current image."""
+    extension = Path(image_name or "").suffix.casefold()
+    mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}.get(extension)
+    cooked = _prepare_image(data, mime_type, max_width=400)
+    backend, _ = _backend()
+    timestamp = _iso_timestamp(now)
+    with _connect() as connection:
+        current = _execute(connection, backend, "SELECT image_id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if current is None:
+            return None
+        image_id = _insert(connection, backend,
+            "INSERT INTO images (bytes, mime_type, byte_size, created_at) VALUES (?, ?, ?, ?)",
+            (cooked, mime_type, len(cooked), timestamp))
+        _execute(connection, backend, "UPDATE users SET image_id = ? WHERE id = ?", (image_id, user_id))
+        _delete_unused_image(connection, backend, current[0])
+        return image_id
+
+
+def remove_profile_image(user_id):
+    """Clear a user's picture and delete its image row if no longer referenced."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        current = _execute(connection, backend, "SELECT image_id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if current is None:
+            return False
+        _execute(connection, backend, "UPDATE users SET image_id = NULL WHERE id = ?", (user_id,))
+        _delete_unused_image(connection, backend, current[0])
+        return True
+
+
+def _delete_unused_image(connection, backend, image_id):
+    """Delete an image only after no post or user references it."""
+    if image_id is not None:
+        _execute(connection, backend, "DELETE FROM images WHERE id = ? "
+            "AND NOT EXISTS (SELECT 1 FROM posts WHERE posts.image_id = images.id) "
+            "AND NOT EXISTS (SELECT 1 FROM users WHERE users.image_id = images.id)", (image_id,))
 
 
 def get_image_file(image_id):

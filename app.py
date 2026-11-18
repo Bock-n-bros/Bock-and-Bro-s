@@ -1,5 +1,7 @@
 """Render account screens and the logged-in venue browser."""
 
+import html
+
 import streamlit as st
 
 import logic
@@ -100,8 +102,11 @@ def show_messages_page(user):
         if query.strip() and not people:
             st.write("No users found.")
         for person in people:
-            name_col, button_col = st.columns([3, 1])
-            name_col.write(person["username"] + (" · Bar owner" if person["role"] == "business" else ""))
+            avatar_col, name_col, button_col = st.columns([1, 3, 1])
+            show_avatar(person, 40, avatar_col)
+            name_col.write(person["username"])
+            if person["role"] == "business":
+                name_col.caption("Bar")
             if button_col.button("Message", key=f"message-{person['id']}"):
                 result = logic.start_app_direct_conversation(user, person["id"])
                 if result.success:
@@ -113,7 +118,9 @@ def show_messages_page(user):
     if not conversations:
         st.write("No conversations yet. Use New message to find someone.")
     for conversation in conversations:
-        text_col, button_col = st.columns([4, 1])
+        avatar_col, text_col, button_col = st.columns([1, 4, 1])
+        show_avatar({"username": conversation["title"],
+                     "image_id": conversation.get("other_image_id")}, 40, avatar_col)
         text_col.write(conversation["title"] + (" · Bar owner" if conversation["other_role"] == "business" else ""))
         if conversation["last_message"]:
             preview = conversation["last_message"]
@@ -160,10 +167,30 @@ def show_person_list(user, people, empty_text, key):
     if not people:
         st.caption(empty_text)
     for person in people:
-        name_col, button_col = st.columns([4, 1])
-        name_col.write(role_label(person))
+        avatar_col, name_col, button_col = st.columns([1, 4, 1])
+        show_avatar(person, 40, avatar_col)
+        name_col.write(person["username"])
+        if person["role"] == "business":
+            name_col.caption("Bar")
         button_col.button("View", key=f"{key}-{person['id']}",
                           on_click=open_profile, args=(person["id"], user["id"]))
+
+
+def show_avatar(person, size=48, target=None):
+    """Show a stored profile picture or a circular username initial."""
+    if target is None:
+        target = st
+    avatar = logic.get_app_profile_avatar(person)
+    if avatar["bytes"]:
+        target.image(avatar["bytes"], width=size)
+        return
+    initial = html.escape(avatar["initial"])
+    target.markdown(
+        f'<div style="width:{size}px;height:{size}px;border-radius:50%;'
+        f'display:flex;align-items:center;justify-content:center;'
+        f'background:#e7edf2;color:#263746;font-weight:700">{initial}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def show_profile(user, profile_id):
@@ -172,7 +199,9 @@ def show_profile(user, profile_id):
     if profile is None:
         st.write("This user could not be found.")
         return
-    st.header(profile["username"])
+    avatar_col, heading_col = st.columns([1, 5])
+    show_avatar(profile, 88, avatar_col)
+    heading_col.header(profile["username"])
     notes = []
     if profile["role"] == "business":
         notes.append("Bar owner")
@@ -180,6 +209,24 @@ def show_profile(user, profile_id):
         notes.append("Follows you")
     if notes:
         st.caption(" · ".join(notes))
+
+    if profile["is_me"]:
+        with st.form("profile-picture-form", clear_on_submit=True):
+            picture = st.file_uploader("Profile picture (JPEG or PNG)", type=logic.IMAGE_TYPES)
+            save_picture = st.form_submit_button("Save picture")
+        if save_picture:
+            if picture is None:
+                st.error("Choose a picture first.")
+            else:
+                result = logic.set_app_profile_picture(user, picture.getvalue(), picture.name)
+                if result.success:
+                    st.rerun()
+                st.error(result.message)
+        if profile["image_id"] and st.button("Remove picture", key="remove-profile-picture"):
+            result = logic.remove_app_profile_picture(user)
+            if result.success:
+                st.rerun()
+            st.error(result.message)
 
     columns = st.columns(4)
     for column, (label, items) in zip(columns, [
@@ -217,7 +264,7 @@ def show_profile(user, profile_id):
             button_col.button("View", key=f"bar-{venue['id']}", on_click=open_venue, args=(venue["id"],))
 
     st.subheader("Posts")
-    show_post_list(user, logic.get_app_user_posts(profile["id"]), "No posts yet.", "profile")
+    show_post_list(user, logic.get_app_user_posts(profile["id"], user), "No posts yet.", "profile")
 
 
 def show_people_page(user):
@@ -236,10 +283,12 @@ def show_people_page(user):
     show_person_list(user, people, "", "search")
 
 
-def show_post(user, post, key, show_likes=False):
+def show_post(user, post, key):
     """Show one post: author, bar, photo, text and time."""
     with st.container(border=True):
-        author_col, venue_col = st.columns([1, 1])
+        author_image_col, author_col, venue_col = st.columns([1, 2, 2])
+        show_avatar({"username": post["username"], "image_id": post["author_image_id"]},
+                    40, author_image_col)
         author_col.button(role_label(post), key=f"{key}-author-{post['id']}", type="tertiary",
                           icon=":material/person:", on_click=open_profile, args=(post["user_id"], user["id"]))
         venue_col.button(post["venue_name"], key=f"{key}-venue-{post['id']}", type="tertiary",
@@ -253,13 +302,12 @@ def show_post(user, post, key, show_likes=False):
         if post["text"]:
             st.text(post["text"])
         st.caption(logic.format_post_time(post["created_at"]))
-        if show_likes:
-            like_label = "Unlike" if post["liked_by_me"] else "Like"
-            if st.button(f"{like_label} · {post['like_count']}", key=f"{key}-like-{post['id']}"):
-                result = logic.toggle_app_like(user, post["id"])
-                if result.success:
-                    st.rerun()
-                st.error(result.message)
+        like_label = "Unlike" if post["liked_by_me"] else "Like"
+        if st.button(f"{like_label} · {post['like_count']}", key=f"{key}-like-{post['id']}"):
+            result = logic.toggle_app_like(user, post["id"])
+            if result.success:
+                st.rerun()
+            st.error(result.message)
         comments = logic.get_app_comments(post["id"])
         with st.expander(f"💬 {len(comments)} comments"):
             for comment in comments:
@@ -305,12 +353,12 @@ def show_post_form(user, key, venue_id=None):
             st.error(result.message)
 
 
-def show_post_list(user, posts, empty_text, key, show_likes=False):
+def show_post_list(user, posts, empty_text, key):
     """Show a list of posts, or a note when there are none."""
     if not posts:
         st.caption(empty_text)
     for post in posts:
-        show_post(user, post, key, show_likes=show_likes)
+        show_post(user, post, key)
 
 
 def show_feed_page(user):
@@ -319,8 +367,7 @@ def show_feed_page(user):
     with st.expander("New post", icon=":material/add_a_photo:"):
         show_post_form(user, "feed")
     show_post_list(user, logic.get_app_feed(user),
-                   "Your feed is empty. Follow people under People, or follow bars on their page.", "feed",
-                   show_likes=True)
+                   "Your feed is empty. Follow people under People, or follow bars on their page.", "feed")
 
 
 PAGES = ["Feed", "Venues", "People", "Messages", "My profile"]
@@ -412,7 +459,7 @@ if logic.can_view_venues(user):
             st.subheader("Posts")
             with st.expander("Post about this venue", icon=":material/add_a_photo:"):
                 show_post_form(user, "venue", venue_id=selected["id"])
-            show_post_list(user, logic.get_app_venue_posts(selected["id"]), "No posts about this venue yet.", "venue")
+            show_post_list(user, logic.get_app_venue_posts(selected["id"], user), "No posts about this venue yet.", "venue")
         if st.button("Back to venues"):
             st.session_state.pop("venue_id", None)
             st.rerun()

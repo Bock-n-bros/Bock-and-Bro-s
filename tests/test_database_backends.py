@@ -76,9 +76,14 @@ def test_postgres_tables_use_identity_ids():
 def test_postgres_initialization_enables_rls_on_every_table(monkeypatch):
     calls = []
 
+    class Result:
+        def fetchall(self):
+            return [("image_id",)]
+
     class FakeConnection:
         def execute(self, sql, *args):
             calls.append(sql)
+            return Result()
 
         def commit(self):
             pass
@@ -89,7 +94,7 @@ def test_postgres_initialization_enables_rls_on_every_table(monkeypatch):
     db.init_db()
     enabled = [sql for sql in calls if sql.startswith("ALTER TABLE")]
     assert enabled == [f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" for table in (
-        "users", "venues", "reviews", "images", "posts", "comments", "likes", "follows", "venue_follows",
+        "images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
         "conversations", "conversation_members", "messages")]
 
 

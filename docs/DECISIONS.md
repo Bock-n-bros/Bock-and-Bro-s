@@ -318,3 +318,19 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** the database protects integrity even when logic is bypassed, while aggregation stays simple and portable.
 - **Instead of:** duplicate likes, SQL `GROUP BY`, notifications or a list of likers.
 - **Where:** `db.py`, `logic.py`, `app.py`, and `specs/09-likes.md`.
+
+### D-048 · Profile pictures use the shared image table
+*18 Nov 2026 · spec 05 update*
+
+- **What:** users reference JPEG or PNG images in the existing image table; uploads are capped at 5 MB and resized to 400 pixels wide. Missing pictures use a circular username initial.
+- **Why:** one permanent storage path serves posts and profiles without external avatar services.
+- **Instead of:** profile-specific file storage, remote avatar lookup or a blank placeholder.
+- **Where:** `db.py`, `logic.py`, `app.py` and `specs/05-follows-and-profiles.md`.
+
+### D-049 · People marks businesses with the text “Bar”
+*18 Nov 2026 · spec 05 update*
+
+- **What:** People results show the word “Bar” for business profiles and no badge for customers; search remains username-only.
+- **Why:** text communicates the account type without relying on color and preserves email privacy.
+- **Instead of:** a color-only marker or searching account email.
+- **Where:** `app.py`, `db.py`, `logic.py` and `specs/05-follows-and-profiles.md`.

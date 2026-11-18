@@ -108,11 +108,51 @@ def test_rejects_coordinates_just_outside_lisbon_limits(venue_db, tmp_path, fiel
     assert logic.load_venues(venue_db, csv_path) == 0
 
 
-def test_does_not_load_rows_if_database_already_has_venues(venue_db, tmp_path):
-    venue_db.insert_venue(venue())
-    csv_path = write_csv(tmp_path / "venues.csv", [venue("Demo Second")])
-    assert logic.load_venues(venue_db, csv_path) == 0
-    assert venue_db.count_venues() == 1
+def test_loads_missing_rows_into_database_with_existing_venues(venue_db, tmp_path):
+    existing_id = venue_db.insert_venue(venue())
+    csv_path = write_csv(tmp_path / "venues.csv", [venue("Demo Super Bar"), venue("Demo Second")])
+    assert logic.load_venues(venue_db, csv_path) == 1
+    assert venue_db.count_venues() == 2
+    assert venue_db.get_venue_by_id(existing_id)["name"] == "Demo Super Bar"
+
+
+def test_skips_venue_names_that_match_case_insensitively(venue_db, tmp_path):
+    existing_id = venue_db.insert_venue(venue("Pensão Amor"))
+    csv_path = write_csv(tmp_path / "venues.csv", [venue("PENSÃO AMOR"), venue("New Bar")])
+    assert logic.load_venues(venue_db, csv_path) == 1
+    assert venue_db.count_venues() == 2
+    assert venue_db.get_venue_by_id(existing_id)["name"] == "Pensão Amor"
+
+
+def test_seeding_preserves_reviews_for_existing_venue(venue_db, tmp_path):
+    venue_id = venue_db.insert_venue(venue("Pensão Amor"))
+    user_id = venue_db.create_user(
+        "venue-reviewer-sub", "reviewer@example.com", "reviewer", "customer"
+    )
+    values = {
+        "atmosphere": 5, "value": 4, "quality": 5,
+        "super_bock_price": 2.5, "comment": "Keep this review",
+    }
+    venue_db.save_review(venue_id, user_id, values, now="2026-11-18T12:00:00+00:00")
+    csv_path = write_csv(tmp_path / "venues.csv", [venue("PENSÃO AMOR"), venue("New Bar")])
+
+    assert logic.load_venues(venue_db, csv_path) == 1
+    review = venue_db.get_user_review(user_id, venue_id)
+    assert review["comment"] == "Keep this review"
+    assert venue_db.count_reviews(venue_id) == 1
+
+
+def test_seed_csv_contains_more_lisbon_venues():
+    from pathlib import Path
+
+    csv_path = Path(__file__).resolve().parents[1] / "data" / "venues.csv"
+    rows, errors = logic.validate_venues_csv(csv_path)
+    assert errors == []
+    assert len(rows) >= 20
+    assert {row["neighbourhood"] for row in rows} >= {
+        "Bairro Alto", "Cais do Sodré", "Chiado", "Príncipe Real",
+        "Alfama", "Graça", "Intendente", "Santos",
+    }
 
 
 def test_loads_valid_rows_when_another_row_is_invalid(venue_db, tmp_path, capsys):

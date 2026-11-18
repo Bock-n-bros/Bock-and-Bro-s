@@ -906,6 +906,19 @@ def get_venue_posts(database, venue_id, user=None):
     return _add_like_details(database, posts, user) if _is_logged_in(user) else posts
 
 
+def get_venue_community_photos(database, venue_id):
+    """Return up to twelve photo posts for a venue, newest first."""
+    return database.get_venue_photo_posts(venue_id, limit=12)
+
+
+def get_post_for_viewer(database, post_id, viewer):
+    """Return one post with the viewer's like state for the feed screen."""
+    posts = database.get_post_details(post_id)
+    if not posts:
+        return None
+    return _add_like_details(database, posts, viewer)[0] if _is_logged_in(viewer) else posts[0]
+
+
 def get_user_posts(database, user_id, viewer=None):
     """Return all posts written by a user."""
     posts = database.get_user_posts(user_id)
@@ -981,6 +994,16 @@ def get_app_feed(user):
 def get_app_venue_posts(venue_id, user=None):
     """Read a venue's posts through the configured database."""
     return get_venue_posts(db, venue_id, user)
+
+
+def get_app_venue_community_photos(venue_id):
+    """Read venue photo metadata through the configured database."""
+    return get_venue_community_photos(db, venue_id)
+
+
+def get_app_post_for_viewer(post_id, viewer):
+    """Read one post for the feed screen."""
+    return get_post_for_viewer(db, post_id, viewer)
 
 
 def get_app_user_posts(user_id, viewer=None):

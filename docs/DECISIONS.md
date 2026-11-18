@@ -350,3 +350,11 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** events stay within the group context and capacity feedback is clear; the current schema has no cancellation state to preserve.
 - **Instead of:** standalone events, immutable responses, silently rejecting full events or adding a cancelled-state column.
 - **Where:** `db.py`, `logic.py`, `app.py` and `specs/08-messages.md`.
+
+### D-052 · Venue community photos remain separate from reviews
+*18 Nov 2026 · venue photos*
+
+- **What:** venue pages show up to twelve newest photo posts in a separate section after reviews; selecting one opens that post in the feed.
+- **Why:** community posts add visual context without changing review counts or averages, and the section stays absent when there are no photos.
+- **Instead of:** mixing posts into review data or loading image bytes with every feed and venue query.
+- **Where:** `db.py`, `logic.py`, `app.py` and `tests/test_venue_photos.py`.

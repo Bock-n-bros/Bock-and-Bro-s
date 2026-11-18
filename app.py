@@ -271,6 +271,12 @@ def open_venue(venue_id):
     st.session_state.page = "Venues"
 
 
+def open_post_in_feed(post_id):
+    """Button callback: open a community photo's post in the feed."""
+    st.session_state.feed_post_id = post_id
+    st.session_state.page = "Feed"
+
+
 def open_chat(user, other_user_id):
     """Button callback: open or start the direct conversation with a user."""
     result = logic.start_app_direct_conversation(user, other_user_id)
@@ -490,8 +496,32 @@ def show_feed_page(user):
     st.header("Feed")
     with st.expander("New post", icon=":material/add_a_photo:"):
         show_post_form(user, "feed")
-    show_post_list(user, logic.get_app_feed(user),
+    feed_posts = logic.get_app_feed(user)
+    selected_post_id = st.session_state.pop("feed_post_id", None)
+    if selected_post_id is not None:
+        selected_post = logic.get_app_post_for_viewer(selected_post_id, user)
+        if selected_post is not None:
+            st.caption("Opened from venue photos")
+            show_post(user, selected_post, "feed-selected")
+            feed_posts = [post for post in feed_posts if post["id"] != selected_post_id]
+    show_post_list(user, feed_posts,
                    "Your feed is empty. Follow people under People, or follow bars on their page.", "feed")
+
+
+def show_venue_community_photos(user, venue_id):
+    """Show the venue's recent photo posts when any exist."""
+    photos = logic.get_app_venue_community_photos(venue_id)
+    if not photos:
+        return
+    st.subheader("Photos from the community")
+    for post in photos:
+        photo = logic.get_app_post_image(post)
+        if photo is None:
+            continue
+        st.image(photo, caption=f"{post['username']} · {logic.format_post_time(post['created_at'])}",
+                 width="stretch")
+        st.button("Open post in feed", key=f"community-photo-{post['id']}",
+                  on_click=open_post_in_feed, args=(post["id"],))
 
 
 PAGES = ["Feed", "Venues", "People", "Messages", "My profile"]
@@ -580,6 +610,7 @@ if logic.can_view_venues(user):
                 if review["comment"]:
                     st.text(review["comment"])
                 st.caption(logic.format_review_date(review))
+            show_venue_community_photos(user, selected["id"])
             st.subheader("Posts")
             with st.expander("Post about this venue", icon=":material/add_a_photo:"):
                 show_post_form(user, "venue", venue_id=selected["id"])

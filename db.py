@@ -792,6 +792,11 @@ def get_venue_posts(venue_id, limit=50):
     return _post_query("WHERE p.venue_id = ?", (venue_id,), limit)
 
 
+def get_venue_photo_posts(venue_id, limit=12):
+    """Fetch the newest photo post metadata for one venue."""
+    return _post_query("WHERE p.venue_id = ? AND p.image_id IS NOT NULL", (venue_id,), limit)
+
+
 def get_user_posts(user_id, limit=50):
     """Fetch user post metadata without reading image bytes."""
     return _post_query("WHERE p.user_id = ?", (user_id,), limit)
@@ -806,6 +811,11 @@ def get_post_by_id(post_id):
     """Return a post id when the post exists."""
     row = _query("SELECT id FROM posts WHERE id = ?", (post_id,)).fetchone()
     return {"id": row[0]} if row else None
+
+
+def get_post_details(post_id):
+    """Fetch one post's display metadata without reading image bytes."""
+    return _post_query("WHERE p.id = ?", (post_id,), 1)
 
 
 def add_comment(post_id, user_id, text, now=None):

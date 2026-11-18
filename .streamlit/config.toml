@@ -1,0 +1,3 @@
+[server]
+# Photos are limited to 5 MB (also checked in logic.py).
+maxUploadSize = 5

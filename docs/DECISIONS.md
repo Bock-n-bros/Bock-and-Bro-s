@@ -158,3 +158,131 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** users need an identifiable display name, but email is private account data.
 - **Instead of:** selecting all user columns when joining reviews.
 - **Where:** `db.py` review query and `tests/test_reviews.py`.
+
+---
+
+## Direct messages (spec 08, part 1)
+
+### D-029 · Direct messages use the same tables as future group chats
+*18 Nov 2026 · spec 08*
+
+- **What:** `conversations`, `conversation_members` and `messages` tables; a direct message is a conversation with `is_group = 0` and two members.
+- **Why:** group chats (rest of spec 08) only need a name and more members, not new tables.
+- **Instead of:** a single `messages` table with sender and receiver columns.
+- **Where:** `db.py` `init_db`.
+
+### D-030 · One direct conversation per pair of users
+*18 Nov 2026 · spec 08*
+
+- **What:** starting a message to someone you already talk to reopens the existing conversation, from either side.
+- **Why:** one continuous dialogue per pair, like every chat app.
+- **Instead of:** a new thread every time someone presses Message.
+- **Where:** `logic.start_direct_conversation`.
+
+### D-031 · Membership is checked in logic on every read and send
+*18 Nov 2026 · spec 08*
+
+- **What:** `get_conversation_messages` returns nothing and `send_message` refuses unless the user is a member.
+- **Why:** private messages must stay private even if a conversation id is guessed (same idea as D-009).
+- **Instead of:** only hiding other people's conversations in the list.
+- **Where:** `logic.py` and `tests/test_messages.py`.
+
+### D-032 · New messages appear by refreshing every 5 seconds
+*18 Nov 2026 · spec 08*
+
+- **What:** the open conversation is a `st.fragment(run_every=5)`, which re-reads only the message list.
+- **Why:** Streamlit has no push/WebSocket for app data; a short refresh is simple and enough for the demo.
+- **Instead of:** real-time delivery through an external service.
+- **Where:** `app.py` `show_conversation`.
+
+### D-033 · Messages are plain text, max 1000 characters, trimmed
+*18 Nov 2026 · spec 08*
+
+- **What:** empty or over-long messages are refused; text is shown with `st.text`.
+- **Why:** same protection against injected formatting and links as reviews (D-012).
+- **Instead of:** Markdown rendering.
+- **Where:** `logic.send_message`, `app.py`.
+
+### D-034 · User search escapes LIKE wildcards
+*18 Nov 2026 · spec 08*
+
+- **What:** `%` and `_` typed in the search box match literally.
+- **Why:** usernames may contain `_`, which SQL `LIKE` would otherwise treat as "any character".
+- **Instead of:** passing the raw search text into the pattern.
+- **Where:** `db.search_users`.
+
+### D-035 · Message times are shown in Lisbon time
+*18 Nov 2026 · spec 08*
+
+- **What:** timestamps are stored in UTC and displayed as "18 Nov, 21:30" in Europe/Lisbon time.
+- **Why:** the app is Lisbon-only, and summer time would otherwise show times an hour off.
+- **Instead of:** showing UTC.
+- **Where:** `logic.format_message_time`.
+
+## Following and profiles (spec 05)
+
+### D-036 · Friends are mutual follows, not a separate friend request
+*18 Nov 2026 · spec 05*
+
+- **What:** "Friends" on a profile are the users you follow who also follow you back.
+- **Why:** one simple follow model (like Instagram) gives both a follower list and a friend list without extra tables or accept/decline screens.
+- **Instead of:** Facebook-style friend requests.
+- **Where:** `logic.get_profile`.
+
+### D-037 · Users follow bars (venues), not bar-owner accounts
+*18 Nov 2026 · spec 05*
+
+- **What:** a separate `venue_follows` table; the Follow bar button is on the venue page.
+- **Why:** bar owners are not linked to a venue yet (spec 04), and users think of following "Park Bar", not an account.
+- **Instead of:** following the bar owner's user account as the way to follow a bar.
+- **Where:** `db.py` `venue_follows`, `logic.follow_venue`.
+
+### D-038 · Following twice or unfollowing twice is not an error
+*18 Nov 2026 · spec 05*
+
+- **What:** repeat follows and unfollows succeed and change nothing; the database also has a unique constraint per pair.
+- **Why:** a double click or a stale page should never create duplicates or show an error.
+- **Instead of:** refusing the second click.
+- **Where:** `db.add_follow`, `db.add_venue_follow`, `tests/test_follows.py`.
+
+### D-039 · Page changes from buttons use callbacks
+*18 Nov 2026 · spec 05*
+
+- **What:** View / Message / bar buttons set the sidebar page through `on_click` callbacks.
+- **Why:** Streamlit only allows changing a widget's value (the page radio) before it is drawn, which is when callbacks run.
+- **Instead of:** setting `st.session_state.page` after the sidebar, which raises an error.
+- **Where:** `app.py` `open_profile`, `open_venue`, `open_chat`.
+
+## Posts and feed (spec 06)
+
+### D-040 · Photos are files in `uploads/`, only the file name is in the database
+*18 Nov 2026 · spec 06*
+
+- **What:** `db.create_post` writes the photo to `uploads/` under a random name and stores that name in `posts.image_path`; `uploads/` is in `.gitignore`.
+- **Why:** keeps the database small, and storage stays in `db.py` so a later move to Supabase Storage touches one file (like D-004).
+- **Instead of:** storing image bytes in SQLite.
+- **Where:** `db.py` `UPLOADS_DIR`, `create_post`, `get_image_file`.
+
+### D-041 · Photos are checked by type, size and file signature
+*18 Nov 2026 · spec 06*
+
+- **What:** only JPG/PNG/WEBP up to 5 MB, and the first bytes must match the type; `.streamlit/config.toml` also caps uploads at 5 MB.
+- **Why:** a renamed file (for example a script called `photo.png`) is refused, without adding an image library.
+- **Instead of:** trusting the file extension, or adding Pillow as a new dependency.
+- **Where:** `logic._image_problem`, `.streamlit/config.toml`.
+
+### D-042 · The feed includes posts about bars you follow
+*18 Nov 2026 · spec 06*
+
+- **What:** feed = your own posts + posts by people you follow + posts tagged with bars you follow, newest first, max 50.
+- **Why:** following a bar (D-037) should show what happens there, which is the point of following it.
+- **Instead of:** only posts from followed people.
+- **Where:** `db.get_feed_posts`.
+
+### D-043 · A post must be tied to a venue and have text, a photo or both
+*18 Nov 2026 · spec 06*
+
+- **What:** venue is required; text max 500 characters; empty posts are refused; if saving the row fails the photo file is deleted again.
+- **Why:** every post becomes content on a venue page, and no orphan files are left behind.
+- **Instead of:** optional venue tags.
+- **Where:** `logic.create_post`, `db.create_post`.

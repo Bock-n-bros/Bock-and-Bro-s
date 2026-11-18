@@ -49,13 +49,273 @@ if user is None:
         st.logout()
     st.stop()
 
+@st.fragment(run_every=5)
+def show_conversation(user, conversation_id):
+    """Show a conversation's messages and refresh them every few seconds."""
+    messages = logic.get_app_conversation_messages(user, conversation_id)
+    if messages is None:
+        st.error("You are not part of this conversation.")
+        return
+    if not messages:
+        st.caption("No messages yet. Say hi!")
+    for message in messages:
+        is_mine = message["user_id"] == user["id"]
+        with st.chat_message(message["username"]):
+            label = "You" if is_mine else message["username"]
+            if not is_mine and message["role"] == "business":
+                label += " · Bar owner"
+            st.caption(f"{label} · {logic.format_message_time(message['created_at'])}")
+            st.text(message["text"])
+
+
+def show_messages_page(user):
+    """Show the conversation list, or one open conversation."""
+    conversation_id = st.session_state.get("conversation_id")
+    if conversation_id is not None:
+        title = logic.get_app_conversation_title(user, conversation_id)
+        if title is None:
+            st.session_state.pop("conversation_id", None)
+            st.rerun()
+        if st.button("← All conversations"):
+            st.session_state.pop("conversation_id", None)
+            st.rerun()
+        st.subheader(title)
+        show_conversation(user, conversation_id)
+        text = st.chat_input("Write a message", max_chars=logic.MAX_MESSAGE_LENGTH)
+        if text:
+            result = logic.send_app_message(user, conversation_id, text)
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+        return
+
+    st.header("Messages")
+    with st.expander("New message"):
+        query = st.text_input("Search by username", key="message_search")
+        people = logic.search_app_people(user, query)
+        if query.strip() and not people:
+            st.write("No users found.")
+        for person in people:
+            name_col, button_col = st.columns([3, 1])
+            name_col.write(person["username"] + (" · Bar owner" if person["role"] == "business" else ""))
+            if button_col.button("Message", key=f"message-{person['id']}"):
+                result = logic.start_app_direct_conversation(user, person["id"])
+                if result.success:
+                    st.session_state.conversation_id = result.conversation_id
+                    st.rerun()
+                st.error(result.message)
+
+    conversations = logic.list_app_conversations(user)
+    if not conversations:
+        st.write("No conversations yet. Use New message to find someone.")
+    for conversation in conversations:
+        text_col, button_col = st.columns([4, 1])
+        text_col.write(conversation["title"] + (" · Bar owner" if conversation["other_role"] == "business" else ""))
+        if conversation["last_message"]:
+            preview = conversation["last_message"]
+            if conversation["last_sender_id"] == user["id"]:
+                preview = "You: " + preview
+            text_col.text(preview if len(preview) <= 80 else preview[:77] + "...")
+            text_col.caption(logic.format_message_time(conversation["last_message_at"]))
+        else:
+            text_col.caption("No messages yet")
+        if button_col.button("Open", key=f"conversation-{conversation['id']}"):
+            st.session_state.conversation_id = conversation["id"]
+            st.rerun()
+
+
+def open_profile(profile_id, my_id):
+    """Button callback: go to a user's profile page."""
+    st.session_state.profile_id = profile_id
+    st.session_state.page = "My profile" if profile_id == my_id else "People"
+
+
+def open_venue(venue_id):
+    """Button callback: go to a venue's page."""
+    st.session_state.venue_id = venue_id
+    st.session_state.page = "Venues"
+
+
+def open_chat(user, other_user_id):
+    """Button callback: open or start the direct conversation with a user."""
+    result = logic.start_app_direct_conversation(user, other_user_id)
+    if result.success:
+        st.session_state.conversation_id = result.conversation_id
+        st.session_state.page = "Messages"
+    else:
+        st.session_state.flash_error = result.message
+
+
+def role_label(person):
+    """Return a username with a 'Bar owner' marker for business accounts."""
+    return person["username"] + (" · Bar owner" if person["role"] == "business" else "")
+
+
+def show_person_list(user, people, empty_text, key):
+    """Show a list of users, each with a button to open their profile."""
+    if not people:
+        st.caption(empty_text)
+    for person in people:
+        name_col, button_col = st.columns([4, 1])
+        name_col.write(role_label(person))
+        button_col.button("View", key=f"{key}-{person['id']}",
+                          on_click=open_profile, args=(person["id"], user["id"]))
+
+
+def show_profile(user, profile_id):
+    """Show a profile with counts, follow and message buttons and the four lists."""
+    profile = logic.get_app_profile(user, profile_id)
+    if profile is None:
+        st.write("This user could not be found.")
+        return
+    st.header(profile["username"])
+    notes = []
+    if profile["role"] == "business":
+        notes.append("Bar owner")
+    if profile["follows_me"] and not profile["is_me"]:
+        notes.append("Follows you")
+    if notes:
+        st.caption(" · ".join(notes))
+
+    columns = st.columns(4)
+    for column, (label, items) in zip(columns, [
+        ("Friends", profile["friends"]), ("Followers", profile["followers"]),
+        ("Following", profile["following"]), ("Bars", profile["bars"]),
+    ]):
+        column.metric(label, len(items))
+
+    if not profile["is_me"]:
+        follow_col, message_col, _ = st.columns([1, 1, 3])
+        if profile["is_followed_by_me"]:
+            if follow_col.button("Unfollow", key="unfollow-user"):
+                logic.unfollow_app_user(user, profile["id"])
+                st.rerun()
+        elif follow_col.button("Follow", key="follow-user", type="primary"):
+            result = logic.follow_app_user(user, profile["id"])
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+        message_col.button("Message", key="message-user", on_click=open_chat, args=(user, profile["id"]))
+
+    friends_tab, followers_tab, following_tab, bars_tab = st.tabs(["Friends", "Followers", "Following", "Bars"])
+    with friends_tab:
+        show_person_list(user, profile["friends"], "No friends yet. Friends are people who follow each other.", "friend")
+    with followers_tab:
+        show_person_list(user, profile["followers"], "No followers yet.", "follower")
+    with following_tab:
+        show_person_list(user, profile["following"], "Not following anyone yet.", "following")
+    with bars_tab:
+        if not profile["bars"]:
+            st.caption("Not following any bars yet.")
+        for venue in profile["bars"]:
+            name_col, button_col = st.columns([4, 1])
+            name_col.write(f"{venue['name']} · {venue['neighbourhood']}")
+            button_col.button("View", key=f"bar-{venue['id']}", on_click=open_venue, args=(venue["id"],))
+
+    st.subheader("Posts")
+    show_post_list(user, logic.get_app_user_posts(profile["id"]), "No posts yet.", "profile")
+
+
+def show_people_page(user):
+    """Show user search, or the selected profile."""
+    if st.session_state.get("profile_id") is not None:
+        if st.button("← Search people"):
+            st.session_state.pop("profile_id", None)
+            st.rerun()
+        show_profile(user, st.session_state.profile_id)
+        return
+    st.header("People")
+    query = st.text_input("Search by username", key="people_search")
+    people = logic.search_app_people(user, query)
+    if query.strip() and not people:
+        st.write("No users found.")
+    show_person_list(user, people, "", "search")
+
+
+def show_post(user, post, key):
+    """Show one post: author, bar, photo, text and time."""
+    with st.container(border=True):
+        author_col, venue_col = st.columns([1, 1])
+        author_col.button(role_label(post), key=f"{key}-author-{post['id']}", type="tertiary",
+                          icon=":material/person:", on_click=open_profile, args=(post["user_id"], user["id"]))
+        venue_col.button(post["venue_name"], key=f"{key}-venue-{post['id']}", type="tertiary",
+                         icon=":material/sports_bar:", on_click=open_venue, args=(post["venue_id"],))
+        if post["image_path"]:
+            image_file = logic.get_app_post_image(post)
+            if image_file is not None:
+                st.image(str(image_file), width="stretch")
+            else:
+                st.caption("Photo unavailable")
+        if post["text"]:
+            st.text(post["text"])
+        st.caption(logic.format_post_time(post["created_at"]))
+
+
+def show_post_form(user, key, venue_id=None):
+    """Show the form for a new post; the venue is fixed on a venue page."""
+    with st.form(f"{key}-post-form", clear_on_submit=True):
+        if venue_id is None:
+            venues = {venue["id"]: venue["name"] for venue in logic.get_venues()}
+            chosen_venue = st.selectbox("Bar or café", list(venues), index=None,
+                                        format_func=venues.get, placeholder="Choose where you are")
+        else:
+            chosen_venue = venue_id
+        text = st.text_area("What's happening?", max_chars=logic.MAX_POST_LENGTH)
+        photo = st.file_uploader("Photo (optional)", type=logic.IMAGE_TYPES)
+        submitted = st.form_submit_button("Post", type="primary")
+    if submitted:
+        result = logic.create_app_post(user, chosen_venue, text,
+                                       photo.getvalue() if photo else None,
+                                       photo.name if photo else None)
+        if result.success:
+            st.toast(result.message)
+        else:
+            st.error(result.message)
+
+
+def show_post_list(user, posts, empty_text, key):
+    """Show a list of posts, or a note when there are none."""
+    if not posts:
+        st.caption(empty_text)
+    for post in posts:
+        show_post(user, post, key)
+
+
+def show_feed_page(user):
+    """Show the new-post form and the feed."""
+    st.header("Feed")
+    with st.expander("New post", icon=":material/add_a_photo:"):
+        show_post_form(user, "feed")
+    show_post_list(user, logic.get_app_feed(user),
+                   "Your feed is empty. Follow people under People, or follow bars on their page.", "feed")
+
+
+PAGES = ["Feed", "Venues", "People", "Messages", "My profile"]
+
 if logic.can_view_venues(user):
     with st.sidebar:
         st.write(user["username"])
         st.write(f"Role: {user['role'].title()}")
+        page = st.radio("Go to", PAGES, key="page")
         if st.button("Log out"):
-            st.session_state.pop("venue_id", None)
+            for key in ("venue_id", "conversation_id", "profile_id"):
+                st.session_state.pop(key, None)
             st.logout()
+
+    if "flash_error" in st.session_state:
+        st.error(st.session_state.pop("flash_error"))
+    if page == "Feed":
+        show_feed_page(user)
+        st.stop()
+    if page == "Messages":
+        show_messages_page(user)
+        st.stop()
+    if page == "People":
+        show_people_page(user)
+        st.stop()
+    if page == "My profile":
+        show_profile(user, user["id"])
+        st.stop()
 
     if st.session_state.get("venue_id") is not None:
         selected = logic.get_venue(st.session_state.venue_id)
@@ -66,6 +326,18 @@ if logic.can_view_venues(user):
             st.write(f"Address: {selected['address']}")
             st.write(f"Shows football: {selected['shows_football']}")
             st.write(selected["description"])
+            follow_status = logic.get_app_venue_follow_status(user, selected["id"])
+            count_col, button_col, _ = st.columns([1, 1, 3])
+            count_col.caption(f"{follow_status['followers']} followers")
+            if follow_status["is_following"]:
+                if button_col.button("Unfollow bar", key="unfollow-venue"):
+                    logic.unfollow_app_venue(user, selected["id"])
+                    st.rerun()
+            elif button_col.button("Follow bar", key="follow-venue", type="primary"):
+                result = logic.follow_app_venue(user, selected["id"])
+                if result.success:
+                    st.rerun()
+                st.error(result.message)
             summary = logic.get_venue_review_summary(selected["id"])
             st.subheader("Reviews")
             if summary["review_count"]:
@@ -104,6 +376,10 @@ if logic.can_view_venues(user):
                 if review["comment"]:
                     st.text(review["comment"])
                 st.caption(logic.format_review_date(review))
+            st.subheader("Posts")
+            with st.expander("Post about this venue", icon=":material/add_a_photo:"):
+                show_post_form(user, "venue", venue_id=selected["id"])
+            show_post_list(user, logic.get_app_venue_posts(selected["id"]), "No posts about this venue yet.", "venue")
         if st.button("Back to venues"):
             st.session_state.pop("venue_id", None)
             st.rerun()

@@ -17,9 +17,8 @@ stores its coordinates now, so the map in a later step can use them without chan
   - `venue_type`: one of `bar`, `cervejaria`, `pub`, `rooftop`, `café`, `sports bar`
   - `shows_football`: `yes` or `no`
   - `description`: one short sentence
-- For now, create the CSV with 5 clearly fictional example venues (names starting with
-  "Demo"), so the code can be built and tested. The team will replace them with real
-  venues afterwards.
+- Keep the five clearly fictional `Demo` venues for tests and include the real Lisbon
+  venues curated for the app's live map and browsing screens.
 
 ### 2. Database (`db.py`)
 - A `venues` table with: id, name, neighbourhood, address, venue_type, shows_football,
@@ -28,8 +27,9 @@ stores its coordinates now, so the map in a later step can use them without chan
 
 ### 3. Rules (`logic.py`)
 - **Loading venues** (`seed.py` calls logic, logic calls db):
-  - On startup, if the venues table is empty, load all rows from `data/venues.csv`.
-  - If the table already has venues, do nothing (no duplicates when the app restarts).
+- On startup, load valid rows from `data/venues.csv` whose names are not already in
+  the venues table (case-insensitive name match).
+- Keep existing venue records and their reviews; repeated startup adds no duplicates.
   - Each row is validated before saving: name, neighbourhood and address are not empty;
     `venue_type` is one of the allowed values; `shows_football` is yes/no;
     latitude is between 38.68 and 38.80 and longitude between -9.25 and -9.08 (Lisbon).
@@ -64,7 +64,7 @@ stores its coordinates now, so the map in a later step can use them without chan
 ## Done when
 
 - [ ] Approved tests pass with `uv run pytest` (old auth tests still pass too).
-- [ ] Starting the app with an empty database loads the 5 demo venues.
+- [ ] Starting the app with an empty database loads all valid seeded venues.
 - [ ] Restarting the app does not create duplicate venues.
 - [ ] A CSV with a bad row (e.g. coordinates in Porto) loads the good rows and reports the bad one.
 - [ ] Each filter works on its own and combined; search ignores upper/lower case.

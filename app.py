@@ -1,8 +1,11 @@
 """Render account screens and the logged-in venue browser."""
 
 import streamlit as st
+import pydeck as pdk
+from urllib.parse import quote_plus
 
 import logic
+import styles
 
 
 try:
@@ -11,6 +14,110 @@ except RuntimeError as error:
     st.error(str(error))
     st.stop()
 st.title("Bock'n Bros")
+
+
+def render_map(venues):
+    """Render the filtered Lisbon venue map and selected venue card."""
+    st.markdown(styles.MAP_LAYOUT_CSS, unsafe_allow_html=True)
+    heading_col, filter_col = st.columns([2, 3], vertical_alignment="center")
+    with heading_col:
+        st.subheader("Bars in Lisbon")
+        st.caption("Tap a dot to see prices and ratings")
+    with filter_col:
+        minimum_rating = st.segmented_control(
+            "Minimum rating", ["All", "3+", "4+", "4.5+"],
+            default="All", key="map_rating", label_visibility="collapsed",
+            width="stretch",
+        )
+
+    try:
+        mapbox_token = st.secrets["mapbox_token"]
+    except Exception:
+        mapbox_token = None
+
+    map_rows = []
+    for venue in venues:
+        summary = logic.get_venue_review_summary(venue["id"])
+        if minimum_rating != "All":
+            threshold = float(minimum_rating[:-1])
+            if summary["overall"] is None or summary["overall"] < threshold:
+                continue
+        reviews = logic.get_venue_reviews(venue["id"])
+        prices = [review["super_bock_price"] for review in reviews
+                  if review["super_bock_price"] is not None]
+        price = min(prices) if prices else summary["average_super_bock_price"]
+        pin_label = logic.price_label(price, summary["overall"])
+        taste_label = f"{summary['quality']:.1f}" if summary["quality"] is not None else "no reviews"
+        vibe_label = f"{summary['atmosphere']:.1f}" if summary["atmosphere"] is not None else "no reviews"
+        map_rows.append({
+            "id": venue["id"], "name": venue["name"],
+            "neighbourhood": venue["neighbourhood"],
+            "latitude": venue["latitude"], "longitude": venue["longitude"],
+            "rating": summary["overall"],
+            "taste": taste_label, "vibe": vibe_label,
+            "price": price, "pin_label": pin_label,
+            "color": logic.marker_color(summary["overall"]),
+        })
+
+    if mapbox_token:
+        map_provider = "mapbox"
+        map_style = logic.map_style_url("Streets")
+        api_keys = {"mapbox": mapbox_token}
+    else:
+        map_provider = "carto"
+        map_style = "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+        api_keys = {}
+        st.caption("Mapbox token not configured; showing the free Positron map style.")
+
+    points = pdk.Layer(
+        "ScatterplotLayer", data=map_rows, id="venue-pins", pickable=True,
+        get_position="[longitude, latitude]", get_fill_color="color",
+        get_line_color=[255, 255, 255], radius_units="pixels", get_radius=7,
+        radius_min_pixels=5, radius_max_pixels=10,
+        line_width_min_pixels=2, stroked=True, auto_highlight=True,
+    )
+    labels = pdk.Layer(
+        "TextLayer", data=map_rows, id="venue-labels",
+        get_position="[longitude, latitude]", get_text="pin_label",
+        get_size=14, get_color=[35, 35, 35], get_pixel_offset=[0, -22],
+        get_text_anchor="middle", get_alignment_baseline="bottom",
+    )
+    deck = pdk.Deck(
+        layers=[points, labels],
+        initial_view_state=pdk.ViewState(latitude=38.7169, longitude=-9.1399, zoom=13),
+        map_provider=map_provider, map_style=map_style, api_keys=api_keys,
+        tooltip={"text": "{name}\n{neighbourhood}\nPrice: {pin_label}\nTaste avg: {taste}\nVibe avg: {vibe}"},
+    )
+    with st.container(key="lisbon_map_frame"):
+        selection = st.pydeck_chart(
+            deck, on_select="rerun", selection_mode="single-object",
+            key="venue_map", height=518, width="stretch",
+        )
+    st.markdown(
+        styles.MAP_LEGEND_HTML.format(shown=len(map_rows), total=len(venues)),
+        unsafe_allow_html=True,
+    )
+    selected_objects = selection.selection.get("objects", {}).get("venue-pins", [])
+    if selected_objects:
+        selected_id = selected_objects[0]["id"]
+        selected = next((venue for venue in venues if venue["id"] == selected_id), None)
+        if selected:
+            st.subheader(selected["name"])
+            st.write(f"{selected['neighbourhood']} · {selected['address']}")
+            maps_query = quote_plus(f"{selected['name']} {selected['address']}")
+            directions_query = quote_plus(
+                f"{selected['latitude']},{selected['longitude']}"
+            )
+            button_col, directions_col = st.columns(2)
+            button_col.link_button(
+                "Open in Google Maps",
+                f"https://www.google.com/maps/search/?api=1&query={maps_query}",
+            )
+            directions_col.link_button(
+                "Walking directions",
+                "https://www.google.com/maps/dir/?api=1&destination="
+                f"{directions_query}&travelmode=walking",
+            )
 
 def google_auth_is_configured():
     """Return whether the required Streamlit auth settings are available."""
@@ -150,7 +257,7 @@ def open_chat(user, other_user_id):
         st.session_state.flash_error = result.message
 
 
-def role_label(person):
+def display_name(person):
     """Return a username with a 'Bar owner' marker for business accounts."""
     return person["username"] + (" · Bar owner" if person["role"] == "business" else "")
 
@@ -161,7 +268,7 @@ def show_person_list(user, people, empty_text, key):
         st.caption(empty_text)
     for person in people:
         name_col, button_col = st.columns([4, 1])
-        name_col.write(role_label(person))
+        name_col.write(display_name(person))
         button_col.button("View", key=f"{key}-{person['id']}",
                           on_click=open_profile, args=(person["id"], user["id"]))
 
@@ -240,7 +347,7 @@ def show_post(user, post, key):
     """Show one post: author, bar, photo, text and time."""
     with st.container(border=True):
         author_col, venue_col = st.columns([1, 1])
-        author_col.button(role_label(post), key=f"{key}-author-{post['id']}", type="tertiary",
+        author_col.button(display_name(post), key=f"{key}-author-{post['id']}", type="tertiary",
                           icon=":material/person:", on_click=open_profile, args=(post["user_id"], user["id"]))
         venue_col.button(post["venue_name"], key=f"{key}-venue-{post['id']}", type="tertiary",
                          icon=":material/sports_bar:", on_click=open_venue, args=(post["venue_id"],))
@@ -388,40 +495,47 @@ if logic.can_view_venues(user):
             st.session_state.pop("venue_id", None)
             st.rerun()
     else:
-        st.header("Venues")
         venues = logic.get_venues()
-        if not venues:
-            st.write("No venues are available right now. The venue list could not be loaded.")
-        else:
-            neighbourhoods = ["All"] + sorted({venue["neighbourhood"] for venue in venues})
-            venue_types = ["All"] + sorted({venue["venue_type"] for venue in venues})
-            left, middle, right = st.columns(3)
-            with left:
-                neighbourhood = st.selectbox("Neighbourhood", neighbourhoods)
-            with middle:
-                venue_type = st.selectbox("Type", venue_types)
-            with right:
-                shows_football = st.toggle("Shows football")
-            sort_labels = {
-                "Name (A–Z)": "name", "Best overall score": "overall",
-                "Best atmosphere": "atmosphere", "Cheapest Super Bock": "price",
-                "Most reviews": "reviews",
-            }
-            sort_label = st.selectbox("Sort by", list(sort_labels))
-            search = st.text_input("Search by name")
-            matches = logic.find_app_venues(
-                neighbourhood=neighbourhood, venue_type=venue_type,
-                shows_football=shows_football, search=search, sort_by=sort_labels[sort_label],
-            )
-            if not matches:
-                st.write("No venues match your filters.")
-            for venue in matches:
-                name_col, area_col, type_col, button_col = st.columns([3, 2, 2, 1])
-                name_col.write(venue["name"])
-                summary = logic.get_venue_review_summary(venue["id"])
-                name_col.write(f"{summary['overall']:.1f} ★ · {summary['review_count']} reviews" if summary["review_count"] else "No reviews yet")
-                area_col.write(venue["neighbourhood"])
-                type_col.write(venue["venue_type"])
-                if button_col.button("View", key=f"venue-{venue['id']}"):
-                    st.session_state.venue_id = venue["id"]
-                    st.rerun()
+        map_tab, venues_tab = st.tabs(["Map", "Venues"])
+        with map_tab:
+            if not venues:
+                st.write("No venues are available right now. The venue list could not be loaded.")
+            else:
+                render_map(venues)
+        with venues_tab:
+            st.header("Venues")
+            if not venues:
+                st.write("No venues are available right now. The venue list could not be loaded.")
+            else:
+                neighbourhoods = ["All"] + sorted({venue["neighbourhood"] for venue in venues})
+                venue_types = ["All"] + sorted({venue["venue_type"] for venue in venues})
+                left, middle, right = st.columns(3)
+                with left:
+                    neighbourhood = st.selectbox("Neighbourhood", neighbourhoods)
+                with middle:
+                    venue_type = st.selectbox("Type", venue_types)
+                with right:
+                    shows_football = st.toggle("Shows football")
+                sort_labels = {
+                    "Name (A–Z)": "name", "Best overall score": "overall",
+                    "Best atmosphere": "atmosphere", "Cheapest Super Bock": "price",
+                    "Most reviews": "reviews",
+                }
+                sort_label = st.selectbox("Sort by", list(sort_labels))
+                search = st.text_input("Search by name")
+                matches = logic.find_app_venues(
+                    neighbourhood=neighbourhood, venue_type=venue_type,
+                    shows_football=shows_football, search=search, sort_by=sort_labels[sort_label],
+                )
+                if not matches:
+                    st.write("No venues match your filters.")
+                for venue in matches:
+                    name_col, area_col, type_col, button_col = st.columns([3, 2, 2, 1])
+                    name_col.write(venue["name"])
+                    summary = logic.get_venue_review_summary(venue["id"])
+                    name_col.write(f"{summary['overall']:.1f} ★ · {summary['review_count']} reviews" if summary["review_count"] else "No reviews yet")
+                    area_col.write(venue["neighbourhood"])
+                    type_col.write(venue["venue_type"])
+                    if button_col.button("View", key=f"venue-{venue['id']}"):
+                        st.session_state.venue_id = venue["id"]
+                        st.rerun()

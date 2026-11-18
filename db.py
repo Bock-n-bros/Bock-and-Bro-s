@@ -13,6 +13,7 @@ DATABASE_UNAVAILABLE_MESSAGE = "Bock'n Bros can't reach the database right now. 
 
 _connection = None
 _connection_key = None
+_initialized_key = None
 
 
 class DatabaseUnavailable(RuntimeError):
@@ -219,7 +220,12 @@ def _rls_table_names():
 
 def init_db():
     """Create application tables and enable Postgres row-level security."""
-    backend, _ = _backend()
+    global _initialized_key
+    backend, setting = _backend()
+    # Many functions call init_db(); on Supabase each statement is a network round trip,
+    # so the tables are only checked once per database setting while the app runs.
+    if _initialized_key == (backend, setting):
+        return
     with _connect() as connection:
         for statement, table in zip(_table_statements(backend), _rls_table_names()):
             _execute(connection, backend, statement)
@@ -227,6 +233,7 @@ def init_db():
                 _execute(connection, backend, f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         _ensure_user_image_column(connection, backend)
         _ensure_email_notifications_column(connection, backend)
+    _initialized_key = (backend, setting)
 
 
 def _ensure_user_image_column(connection, backend):

@@ -366,3 +366,11 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** email can bring members back without revealing private message text, and a recipient-wide cooldown prevents a group from repeatedly notifying one person.
 - **Instead of:** message excerpts, app-layer SMTP calls, notifications for opted-out users or a separate cooldown for every sender.
 - **Where:** `db.py`, `logic.py`, `mail.py`, `app.py`, `specs/10-notifications.md` and `.streamlit/secrets.toml.example`.
+
+### D-046 · Tables are created once per run, not on every query
+*18 Nov 2026 · Supabase performance*
+
+- **What:** `init_db()` remembers which database it has already prepared and returns immediately on later calls.
+- **Why:** on Supabase every CREATE/ALTER statement is a network round trip; with init_db called from many read functions, the map page sent hundreds of them and became very slow.
+- **Instead of:** checking all ten tables before every read.
+- **Where:** `db.init_db`.

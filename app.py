@@ -426,7 +426,9 @@ def show_person_list(user, people, empty_text, key):
     for person in people:
         avatar_col, name_col, button_col = st.columns([1, 4, 1])
         show_avatar(person, 40, avatar_col)
-        name_col.write(display_name(person))
+        name_col.write(person["username"])
+        if person["role"] == "business":
+            name_col.caption("Bar")
         button_col.button("View", key=f"{key}-{person['id']}",
                           on_click=open_profile, args=(person["id"], user["id"]))
 

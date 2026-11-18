@@ -1,22 +1,32 @@
 """Tests for posts with photos, the feed and posts on venue and profile pages."""
 
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 
 import pytest
 
 import db
 import logic
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-JPG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
-WEBP = b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"\x00" * 100
+from PIL import Image
+
+
+def image_bytes(format_name="PNG", size=(8, 6), color=(20, 80, 120)):
+    """Create a small valid image for upload tests."""
+    buffer = BytesIO()
+    Image.new("RGB", size, color).save(buffer, format=format_name)
+    return buffer.getvalue()
+
+
+PNG = image_bytes()
+JPG = image_bytes("JPEG")
 
 
 @pytest.fixture
 def post_db(tmp_path, monkeypatch):
-    """Use an isolated database and uploads folder for every post test."""
+    """Use an isolated database for every post test."""
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "posts.db")
-    monkeypatch.setattr(db, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(db, "_database_url", lambda: None)
     db.init_db()
     return db
 
@@ -46,11 +56,6 @@ def texts(posts):
     return [post["text"] for post in posts]
 
 
-def uploaded_files():
-    """Return the files currently in the uploads folder."""
-    return sorted(db.UPLOADS_DIR.glob("*")) if db.UPLOADS_DIR.exists() else []
-
-
 def test_customer_and_bar_owner_can_post_with_photo(post_db):
     anna = make_user(post_db, "anna")
     bar = make_user(post_db, "parkbar", role="business")
@@ -63,17 +68,22 @@ def test_customer_and_bar_owner_can_post_with_photo(post_db):
     posts = logic.get_venue_posts(post_db, park)
     assert {post["username"] for post in posts} == {"anna", "parkbar"}
     assert {post["role"] for post in posts} == {"customer", "business"}
-    assert len(uploaded_files()) == 2
-    image = post_db.get_image_file(posts[0]["image_path"])
-    assert image is not None and image.read_bytes() in (PNG, JPG)
+    fetched = post_db.get_post_image(posts[0]["image_id"])
+    assert fetched["mime_type"] in ("image/png", "image/jpeg")
+    assert fetched["bytes"]
 
 
-def test_text_only_photo_only_and_webp_are_allowed(post_db):
+def test_text_only_and_photo_only_posts_work_but_webp_is_refused(post_db):
     anna = make_user(post_db, "anna")
     park = make_venue(post_db)
 
-    assert logic.create_post(post_db, anna, park, "Just text").success
-    assert logic.create_post(post_db, anna, park, "", WEBP, "pic.webp").success
+    text_result = logic.create_post(post_db, anna, park, "Just text")
+    photo_result = logic.create_post(post_db, anna, park, "", PNG, "pic.png")
+    assert text_result.success
+    assert photo_result.success
+    assert post_db.get_user_posts(anna["id"])[1]["image_id"] is None
+    rejected_webp = logic.create_post(post_db, anna, park, "", image_bytes("WEBP"), "pic.webp")
+    assert not rejected_webp.success
     assert post_db.count_posts() == 2
 
 
@@ -96,7 +106,45 @@ def test_invalid_posts_are_refused_and_nothing_is_saved(post_db, text, image, na
 
     assert not result.success
     assert post_db.count_posts() == 0
-    assert uploaded_files() == []
+    assert post_db.count_images() == 0
+
+
+def test_image_mime_and_bytes_round_trip_including_null_bytes(post_db, monkeypatch):
+    anna = make_user(post_db, "anna")
+    park = make_venue(post_db)
+    original = image_bytes(color=(0, 0, 0))
+    assert original.count(b"\x00") > 1
+    monkeypatch.setattr(post_db, "_prepare_image", lambda data, mime_type: data)
+    result = logic.create_post(post_db, anna, park, "photo", original, "photo.png")
+    post = post_db.get_user_posts(anna["id"])[0]
+    stored = post_db.get_post_image(post["image_id"])
+    assert result.success
+    assert stored["mime_type"] == "image/png"
+    assert stored["bytes"] == original
+
+
+def test_image_size_boundary_is_checked_before_processing(post_db):
+    anna = make_user(post_db, "anna")
+    park = make_venue(post_db)
+    maximum = 5 * 1024 * 1024
+    exact_limit = PNG + b"\x00" * (maximum - len(PNG))
+    too_large = exact_limit + b"\x00"
+    assert logic.create_post(post_db, anna, park, "ok", exact_limit, "ok.png").success
+    rejected = logic.create_post(post_db, anna, park, "too big", too_large, "big.png")
+    assert not rejected.success
+    assert post_db.count_images() == 1
+
+
+@pytest.mark.parametrize(("width", "expected"), [(1200, 1200), (1201, 1200)])
+def test_image_width_boundary(post_db, width, expected):
+    anna = make_user(post_db, f"anna{width}")
+    park = make_venue(post_db)
+    raw = image_bytes(size=(width, 10))
+    result = logic.create_post(post_db, anna, park, "wide", raw, "wide.png")
+    post = post_db.get_user_posts(anna["id"])[0]
+    stored = post_db.get_post_image(post["image_id"])
+    assert result.success
+    assert Image.open(BytesIO(stored["bytes"])).width == expected
 
 
 def test_post_must_have_an_existing_venue(post_db):
@@ -175,6 +223,16 @@ def test_post_shows_venue_name_and_no_email(post_db):
     assert post["venue_name"] == "Park Bar"
     assert post["text"] == "**bold** <b>hi</b>"
     assert "example.com" not in str(post)
+
+
+def test_feed_query_returns_image_reference_without_binary_data(post_db):
+    anna = make_user(post_db, "anna")
+    park = make_venue(post_db)
+    logic.create_post(post_db, anna, park, "with photo", PNG, "photo.png")
+    post = logic.get_feed(post_db, anna)[0]
+    assert post["image_id"] is not None
+    assert "bytes" not in post
+    assert "image_bytes" not in post
 
 
 def test_image_lookup_cannot_leave_the_uploads_folder(post_db):

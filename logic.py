@@ -60,15 +60,7 @@ class PostResult:
 
 
 MAX_POST_LENGTH = 500
-MAX_IMAGE_BYTES = 5 * 1024 * 1024
-# File signatures ("magic bytes"), so a renamed non-image file is refused.
-IMAGE_SIGNATURES = {
-    ".jpg": (b"\xff\xd8\xff",),
-    ".jpeg": (b"\xff\xd8\xff",),
-    ".png": (b"\x89PNG\r\n\x1a\n",),
-    ".webp": (b"RIFF",),
-}
-IMAGE_TYPES = ["jpg", "jpeg", "png", "webp"]
+IMAGE_TYPES = ["jpg", "jpeg", "png"]
 MAX_MESSAGE_LENGTH = 1000
 LISBON = ZoneInfo("Europe/Lisbon")
 
@@ -507,21 +499,6 @@ def get_app_venue_follow_status(user, venue_id):
     return get_venue_follow_status(db, user, venue_id)
 
 
-def _image_problem(image_bytes, image_name):
-    """Return why a photo is not allowed, or None if it is fine."""
-    extension = Path(image_name or "").suffix.casefold()
-    if extension not in IMAGE_SIGNATURES:
-        return None, "Photos must be JPG, PNG or WEBP."
-    if len(image_bytes) > MAX_IMAGE_BYTES:
-        return None, "Photos can be at most 5 MB."
-    looks_right = image_bytes.startswith(IMAGE_SIGNATURES[extension])
-    if extension == ".webp":
-        looks_right = looks_right and image_bytes[8:12] == b"WEBP"
-    if not looks_right:
-        return None, "That file is not a valid image."
-    return extension, None
-
-
 def create_post(database, user, venue_id, text, image_bytes=None, image_name=None, now=None):
     """Check permission and input, then save a post tied to a venue."""
     if not _is_logged_in(user):
@@ -533,15 +510,13 @@ def create_post(database, user, venue_id, text, image_bytes=None, image_name=Non
     text = (text or "").strip()
     if len(text) > MAX_POST_LENGTH:
         return PostResult(False, f"Posts can be at most {MAX_POST_LENGTH} characters.")
-    extension = None
-    if image_bytes:
-        extension, problem = _image_problem(image_bytes, image_name)
-        if problem:
-            return PostResult(False, problem)
     if not text and not image_bytes:
         return PostResult(False, "Add some text or a photo.")
-    post_id = database.create_post(user["id"], venue_id, text or None,
-                                   image_bytes or None, extension, now=now)
+    try:
+        post_id = database.create_post(user["id"], venue_id, text or None,
+                                       image_bytes or None, image_name, now=now)
+    except ValueError as error:
+        return PostResult(False, str(error))
     return PostResult(True, "Posted!", post_id)
 
 
@@ -591,5 +566,8 @@ def get_app_user_posts(user_id):
 
 
 def get_app_post_image(post):
-    """Return the file path of a post's photo, or None."""
-    return db.get_image_file(post["image_path"])
+    """Return one post's image bytes from the database, or None."""
+    if not post.get("image_id"):
+        return None
+    image = db.get_image_file(post["image_id"])
+    return image["bytes"] if image else None

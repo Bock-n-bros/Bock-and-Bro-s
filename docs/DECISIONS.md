@@ -255,7 +255,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 
 ## Posts and feed (spec 06)
 
-### D-040 · Photos are files in `uploads/`, only the file name is in the database
+### D-040 · Photos are files in `uploads/`, only the file name is in the database (Replaced by D-045)
 *18 Nov 2026 · spec 06*
 
 - **What:** `db.create_post` writes the photo to `uploads/` under a random name and stores that name in `posts.image_path`; `uploads/` is in `.gitignore`.
@@ -263,7 +263,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** storing image bytes in SQLite.
 - **Where:** `db.py` `UPLOADS_DIR`, `create_post`, `get_image_file`.
 
-### D-041 · Photos are checked by type, size and file signature
+### D-041 · Photos are checked by type, size and file signature (Replaced by D-045)
 *18 Nov 2026 · spec 06*
 
 - **What:** only JPG/PNG/WEBP up to 5 MB, and the first bytes must match the type; `.streamlit/config.toml` also caps uploads at 5 MB.
@@ -286,3 +286,19 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** every post becomes content on a venue page, and no orphan files are left behind.
 - **Instead of:** optional venue tags.
 - **Where:** `logic.create_post`, `db.create_post`.
+
+### D-044 · SQLite and Postgres share one portable database layer
+*18 Nov 2026 · feature/supabase merged into feature/feed*
+
+- **What:** table setup and feed, follow, and messaging queries use backend-aware statements, placeholders and insert helpers.
+- **Why:** local SQLite and deployed Postgres need to run the same application behavior without Supabase in local tests.
+- **Instead of:** SQLite-specific SQL in feed and chat functions.
+- **Where:** `db.py` `_table_statements`, `_execute`, `_insert` and feed/chat storage functions.
+
+### D-045 · Post images are compressed database records
+*18 Nov 2026 · permanent image storage*
+
+- **What:** validated JPEG and PNG images are resized to at most 1200 pixels wide and stored as BLOB/BYTEA records; posts keep an `image_id`.
+- **Why:** database storage survives Streamlit restarts and one image is fetched only when displayed.
+- **Instead of:** files in `uploads/` or loading image bytes into every feed result.
+- **Where:** `db.py` `images`, `create_post`, `get_post_image` and post queries.

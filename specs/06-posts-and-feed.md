@@ -12,11 +12,10 @@ Needs spec 05 (follows).
 
 ### 1. Database (`db.py`)
 - A `posts` table with: id, user_id (REFERENCES users), venue_id (REFERENCES venues,
-  not null), text, image_path (nullable), created_at.
-- **Image files** are saved by `db.py` in an `uploads/` folder in the project, under a
-  random file name (e.g. `uuid4().hex` + extension). Only the file name is stored in
-  `image_path`. The folder path is one setting in `db.py`, like the database path, so
-  tests use a temporary folder. `uploads/` is added to `.gitignore`.
+  not null), text, image_id (nullable REFERENCES images), created_at.
+- An `images` table stores id, bytes (SQLite BLOB / Postgres BYTEA), mime_type,
+  byte_size and created_at. Images are processed and saved by `db.py`; post queries
+  return only `image_id`, and image bytes are fetched one at a time for display.
 - Functions to: save a post (with optional image bytes + extension), fetch the feed for
   a user (posts by the users they follow and their own, newest first, at most 50), fetch
   posts for a venue (newest first, at most 50), fetch posts by a user (newest first, at
@@ -29,9 +28,10 @@ Needs spec 05 (follows).
   - The venue must exist.
   - `text` is trimmed and at most 500 characters.
   - A post must have text, a photo, or both. An empty post is refused.
-  - A photo must be `.jpg`, `.jpeg`, `.png` or `.webp` (case-insensitive), at
-    most 5 MB, and its first bytes must match that image type (so a renamed file is
-    refused). Anything else is refused and nothing is saved.
+  - A photo must be `.jpg`, `.jpeg` or `.png` (case-insensitive), at most 5 MB
+    before processing, and its content must be a valid image of the matching type.
+    Images wider than 1200 pixels are resized and accepted images are compressed.
+    Anything else is refused and nothing is saved.
 - **Feed:** posts from users the current user follows, posts tagged with bars they
   follow (spec 05), plus their own posts. Someone
   who follows nobody sees only their own posts and a hint to find people.
@@ -41,8 +41,8 @@ Needs spec 05 (follows).
 
 ### 3. Screens (`app.py`)
 - **Feed page:** a **New post** form at the top: venue (select box, searchable by name),
-  text area (max 500), and photo upload (`st.file_uploader` with types jpg, jpeg, png,
-  webp). Below it the feed: username (click opens their profile), "Bar owner" label if
+  text area (max 500), and photo upload (`st.file_uploader` with types jpg, jpeg, png).
+  Below it the feed: username (click opens their profile), "Bar owner" label if
   any, venue name (click opens the venue page), photo (`st.image`), text, date.
 - **Venue page:** a new **Posts** section below the reviews, with the same post layout,
   and a **Post about this venue** shortcut that opens the form with the venue chosen.
@@ -68,5 +68,5 @@ Needs spec 05 (follows).
 - [ ] An empty post, a missing venue, text over 500 characters, a `.gif` or a 6 MB
       photo is refused with a clear message, and no row or file is saved.
 - [ ] Photos are still shown after restarting the app.
-- [ ] `uploads/` is not committed to Git.
-- [ ] Still no file other than `db.py` imports `sqlite3` or writes to `uploads/`.
+- [ ] Image bytes are fetched individually rather than with feed metadata.
+- [ ] Still no file other than `db.py` imports database drivers.

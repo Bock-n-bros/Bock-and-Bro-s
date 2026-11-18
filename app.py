@@ -5,7 +5,11 @@ import streamlit as st
 import logic
 
 
-logic.initialize_app_data()
+try:
+    logic.initialize_app_data()
+except RuntimeError as error:
+    st.error(str(error))
+    st.stop()
 st.title("Bock'n Bros")
 
 def google_auth_is_configured():
@@ -240,10 +244,10 @@ def show_post(user, post, key):
                           icon=":material/person:", on_click=open_profile, args=(post["user_id"], user["id"]))
         venue_col.button(post["venue_name"], key=f"{key}-venue-{post['id']}", type="tertiary",
                          icon=":material/sports_bar:", on_click=open_venue, args=(post["venue_id"],))
-        if post["image_path"]:
-            image_file = logic.get_app_post_image(post)
-            if image_file is not None:
-                st.image(str(image_file), width="stretch")
+        if post["image_id"]:
+            image_bytes = logic.get_app_post_image(post)
+            if image_bytes is not None:
+                st.image(image_bytes, width="stretch")
             else:
                 st.caption("Photo unavailable")
         if post["text"]:

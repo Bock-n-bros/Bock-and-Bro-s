@@ -120,15 +120,15 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Where:** `tests/test_auth.py`, `tests/test_reviews.py`; manual list in `specs/04-google-login.md`.
 
 ### D-024 · Only the Streamlit auth extra replaces bcrypt
-*18 Nov 2026 · step 6*
+*18 Nov 2026 · step 7*
 
 - **What:** the project uses `streamlit[auth]` and removes `bcrypt`.
-- **Why:** Streamlit's OpenID Connect login supplies the approved Google login without a separate password library.
+- **Why:** `st.login` only works with the `streamlit[auth]` extra, which installs Authlib. bcrypt hashed passwords, and the app no longer has any.
 - **Instead of:** adding a direct Authlib dependency or keeping password hashing in the app.
 - **Where:** `pyproject.toml` and `uv.lock`.
 
 ### D-025 · The users schema follows the new profile shape without a migration
-*18 Nov 2026 · step 6*
+*18 Nov 2026 · step 7*
 
 - **What:** `db.py` creates users with Google subject, email, username, username key, role, and creation time only.
 - **Why:** the spec explicitly asks the team to delete the local database once, so migration code would add work outside the feature.
@@ -136,15 +136,15 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Where:** `db.py` users table and the setup note in `README.md`.
 
 ### D-026 · App authentication stays behind logic wrappers
-*18 Nov 2026 · step 6*
+*18 Nov 2026 · step 7*
 
-- **What:** `app.py` passes the Streamlit Google identity to logic wrappers, which call the database functions and return the stable public user dictionary.
-- **Why:** the existing screen/database boundary remains explainable and the email stays out of logged-in user data used by venue features.
-- **Instead of:** importing `db.py` directly in the Streamlit screen.
+- **What:** `app.py` never talks to the database. It gives Google's id and email to two small functions in `logic.py` (`find_app_google_user`, `complete_app_profile`), which call `db.py`.
+- **Why:** keeps the three-layer rule (D-002), so the login rules can be tested without a browser.
+- **Instead of:** `app.py` calling `db.py` directly.
 - **Where:** `app.py` and `logic.py`.
 
 ### D-027 · Missing auth settings show a setup warning
-*18 Nov 2026 · step 6*
+*18 Nov 2026 · step 7*
 
 - **What:** the app checks the required `[auth]` keys and shows "Google login is not set up — see README" when they are unavailable.
 - **Why:** an unfinished local setup should be understandable instead of raising a configuration exception.
@@ -152,9 +152,41 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Where:** `app.py` and `.streamlit/secrets.toml.example`.
 
 ### D-028 · Review rows expose usernames but not reviewer emails
-*18 Nov 2026 · step 6*
+*18 Nov 2026 · step 7*
 
 - **What:** venue review results include the reviewer's username and omit their Google email.
 - **Why:** users need an identifiable display name, but email is private account data.
 - **Instead of:** selecting all user columns when joining reviews.
 - **Where:** `db.py` review query and `tests/test_reviews.py`.
+
+### D-029 · Users are identified by Google's `sub`, not their email
+*18 Nov 2026 · step 7*
+
+- **What:** each user row stores `google_sub`, Google's permanent id for the account, and the app finds users by it. The email is stored but never shown.
+- **Why:** an email address can change; `sub` never does, so a user keeps their profile and reviews.
+- **Instead of:** using the email as the key.
+- **Where:** `db.get_user_by_google_sub`, `users` table.
+
+### D-030 · The logged-in user stays {id, username, role}
+*18 Nov 2026 · step 7*
+
+- **What:** `logic.find_google_user` returns only id, username and role, the same shape as the old password login.
+- **Why:** reviews and the team's chat, leaderboard and map use this dictionary, so none of them needed changes.
+- **Instead of:** passing Google's full user data around, which would expose the email and break other features.
+- **Where:** `logic.find_google_user`.
+
+### D-031 · First login asks for username, role and 18+
+*18 Nov 2026 · step 7*
+
+- **What:** a Google account without a profile sees "Finish your profile". `logic.complete_profile` checks the username rules, that the name is free, the role and the 18+ box before saving.
+- **Why:** Google knows neither our roles nor a public name, and showing real Google names publicly is a privacy problem. The rules from spec 01 stay.
+- **Instead of:** using the Google name and making everyone a customer.
+- **Where:** profile form in `app.py`, `logic.complete_profile`.
+
+### D-032 · The login is read from Streamlit's signed cookie on every page load
+*18 Nov 2026 · step 7*
+
+- **What:** `app.py` reads `st.user` and loads the user from the database by `sub` on every rerun. The login is no longer copied into `st.session_state`.
+- **Why:** one source of truth that users cannot edit. The old "session out of date" check is no longer needed.
+- **Instead of:** storing the user in session state at login, as the password version did.
+- **Where:** top of `app.py`.

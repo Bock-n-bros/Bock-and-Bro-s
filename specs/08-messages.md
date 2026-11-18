@@ -50,12 +50,13 @@ Needs spec 05 (finding users).
   **Earlier**. Members can answer yes/no; the event creator can cancel.
 - A **Message** button on profile pages (spec 05) opens or starts a direct conversation.
 - The message list refreshes every 5 seconds with `st.fragment(run_every=5)`.
+- Email notifications for new activity and unanswered meetups follow spec 10.
 
 ## Out of scope
 
 - Deleting an entire group
 - Real-time delivery (WebSockets); a 5-second refresh is enough for the demo
-- Read receipts, typing indicators, unread counts and notifications
+- Read receipts, typing indicators and unread counts
 - Photos in messages
 - Editing or deleting messages
 - Blocking users

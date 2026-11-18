@@ -1,12 +1,15 @@
 """Validate account actions and apply authentication rules."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import logging
+import math
 from zoneinfo import ZoneInfo
 import csv
 from pathlib import Path
 
 import db
+import mail
 
 
 VENUE_TYPES = {"bar", "cervejaria", "pub", "rooftop", "café", "sports bar"}
@@ -92,6 +95,15 @@ class ProfilePictureResult:
 
     success: bool
     message: str
+
+
+@dataclass
+class NotificationResult:
+    """Describe the outcome of a notification request."""
+
+    success: bool
+    message: str
+    sent_count: int = 0
 
 
 MAX_POST_LENGTH = 500
@@ -622,6 +634,138 @@ def cancel_event(database, user, event_id):
     return EventResult(True, "Meetup cancelled.", event_id)
 
 
+def _notification_cooldown(database, conversation_id, recipient_id, now):
+    """Return remaining cooldown time, if a recent notice was sent."""
+    last_sent = database.get_notification_sent_at(conversation_id, recipient_id)
+    if last_sent is None:
+        return None
+    previous = datetime.fromisoformat(last_sent)
+    if previous.tzinfo is None:
+        previous = previous.replace(tzinfo=timezone.utc)
+    remaining = timedelta(hours=1) - (now - previous.astimezone(timezone.utc))
+    return remaining if remaining.total_seconds() > 0 else None
+
+
+def _send_notification(database, sender, conversation, recipient_id, subject, details, now):
+    """Check consent and cooldown, send one notice, and record successful delivery."""
+    recipient = database.get_email_notification_settings(recipient_id)
+    if recipient is None:
+        return "missing"
+    if not recipient["email_notifications"]:
+        return "disabled"
+    remaining = _notification_cooldown(database, conversation["id"], recipient_id, now)
+    if remaining is not None:
+        return f"cooldown:{max(1, math.ceil(remaining.total_seconds() / 60))}"
+    body = (f"{sender['username']} notified you in {conversation['title']}.\n\n"
+            f"{details}\n\nOpen Bock'n Bros: {mail.app_url()}")
+    try:
+        mail.send_notification(recipient["email"], subject, body)
+        sent_at = now.isoformat()
+        database.add_notification(conversation["id"], sender["id"], recipient_id, sent_at)
+    except Exception:
+        logging.exception("Email notification delivery failed for recipient %s", recipient_id)
+        return "failed"
+    return "sent"
+
+
+def _notify_recipients(database, user, conversation, recipient_ids, subject, details, now=None):
+    """Send a notice to eligible members and summarize any delivery blocks."""
+    if not mail.smtp_configured():
+        return NotificationResult(False, "Email notifications are not set up.")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    statuses = [_send_notification(database, user, conversation, recipient_id,
+                                    subject, details, current) for recipient_id in recipient_ids]
+    sent_count = statuses.count("sent")
+    if sent_count:
+        message = f"Notification sent to {sent_count} {('person' if sent_count == 1 else 'people')}."
+        if "disabled" in statuses:
+            message += " Some recipients have turned off email notifications."
+        if any(status.startswith("cooldown:") for status in statuses):
+            remaining = min(int(status.split(":")[1]) for status in statuses if status.startswith("cooldown:"))
+            unit = "minute" if remaining == 1 else "minutes"
+            message += f" Try again in {remaining} {unit} for other recipients."
+        if "failed" in statuses:
+            message += " Some emails could not be sent; please try again."
+        return NotificationResult(True, message, sent_count)
+    if "disabled" in statuses:
+        return NotificationResult(False, "The recipient has turned off email notifications.")
+    cooldowns = [int(status.split(":")[1]) for status in statuses if status.startswith("cooldown:")]
+    if cooldowns:
+        remaining = min(cooldowns)
+        unit = "minute" if remaining == 1 else "minutes"
+        return NotificationResult(False, f"{remaining} {unit} remaining before you can notify again.")
+    if "failed" in statuses:
+        return NotificationResult(False, "Email could not be sent. Please try again.")
+    if statuses and all(status == "missing" for status in statuses):
+        return NotificationResult(False, "The recipient could not be found.")
+    return NotificationResult(False, "No one is waiting for a response.")
+
+
+def notify_conversation(database, user, conversation_id, now=None):
+    """Notify the other member of a direct conversation without quoting messages."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to notify someone.")
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None or not database.is_conversation_member(conversation_id, user["id"]):
+        return NotificationResult(False, "You are not part of this conversation.")
+    if conversation["is_group"]:
+        return NotificationResult(False, "Use Notify bro on a meetup to notify the group.")
+    members = database.get_conversation_members(conversation_id)
+    recipients = [member["id"] for member in members if member["id"] != user["id"]]
+    details = "There is something new in your conversation."
+    conversation["title"] = "your direct conversation"
+    return _notify_recipients(database, user, conversation, recipients,
+                              "New activity in Bock'n Bros", details, now)
+
+
+def notify_event(database, user, event_id, now=None):
+    """Notify group members who have not responded to a meetup."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to notify the group.")
+    event = database.get_event(event_id)
+    if event is None or not database.is_conversation_member(event["conversation_id"], user["id"]):
+        return NotificationResult(False, "You are not a member of this meetup's group.")
+    conversation = database.get_conversation(event["conversation_id"])
+    if conversation is None or not conversation["is_group"]:
+        return NotificationResult(False, "Meetup notifications are only available in groups.")
+    conversation["title"] = get_conversation_title_for_user(database, user, conversation["id"]) or "your group"
+    responded = {row["user_id"] for row in database.get_event_responses(event_id)}
+    recipients = [member["id"] for member in database.get_conversation_members(conversation["id"])
+                 if member["id"] != user["id"] and member["id"] not in responded]
+    details = (f"Meetup: {event['title']}\nPlace: {event['venue_name']}\n"
+               f"When: {format_event_time(event['starts_at'])}")
+    return _notify_recipients(database, user, conversation, recipients,
+                              f"Meetup reminder: {event['title']}", details, now)
+
+
+def get_conversation_title_for_user(database, user, conversation_id):
+    """Return a member's display title for a conversation."""
+    return next((item["title"] for item in list_conversations(database, user)
+                 if item["id"] == conversation_id), None)
+
+
+def set_email_notifications(database, user, enabled):
+    """Let a signed-in user change only their own notification preference."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to change notification settings.")
+    if not isinstance(enabled, bool):
+        return NotificationResult(False, "Choose whether email notifications are on or off.")
+    if database.set_email_notifications(user["id"], enabled) is None:
+        return NotificationResult(False, "Your profile could not be found.")
+    label = "on" if enabled else "off"
+    return NotificationResult(True, f"Email notifications turned {label}.")
+
+
+def get_email_notifications(database, user):
+    """Return the signed-in user's email notification preference."""
+    if not _is_logged_in(user):
+        return None
+    return database.get_email_notifications(user["id"])
+
+
 def search_app_people(user, text):
     """Find other users through the configured database."""
     return search_people(db, user, text)
@@ -640,6 +784,31 @@ def send_app_message(user, conversation_id, text):
 def get_app_conversation_messages(user, conversation_id):
     """Read a conversation through the configured database."""
     return get_conversation_messages(db, user, conversation_id)
+
+
+def notify_app_conversation(user, conversation_id):
+    """Send a new-activity email for a direct conversation."""
+    return notify_conversation(db, user, conversation_id)
+
+
+def notify_app_event(user, event_id):
+    """Send a meetup notification to group members still awaiting a response."""
+    return notify_event(db, user, event_id)
+
+
+def app_email_notifications_enabled(user):
+    """Read the signed-in user's email preference."""
+    return get_email_notifications(db, user)
+
+
+def set_app_email_notifications(user, enabled):
+    """Save the signed-in user's email preference."""
+    return set_email_notifications(db, user, enabled)
+
+
+def app_email_notifications_configured():
+    """Report whether SMTP settings are available for the notification buttons."""
+    return mail.smtp_configured()
 
 
 def list_app_conversations(user):

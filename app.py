@@ -91,6 +91,9 @@ def show_messages_page(user):
         if conversation["is_group"]:
             show_group_controls(user, conversation)
             show_group_events(user, conversation_id)
+        else:
+            show_notify_button(f"conversation-notify-{conversation_id}",
+                               logic.notify_app_conversation, (user, conversation_id))
         show_conversation(user, conversation_id)
         text = st.chat_input("Write a message", max_chars=logic.MAX_MESSAGE_LENGTH)
         if text:
@@ -241,6 +244,9 @@ def show_group_event(user, event):
             capacity += f" / {event['max_attendees']} places"
         st.caption(f"{logic.format_event_time(event['starts_at'])} · {capacity}")
         st.text(f"Going: {attendees}")
+        if not event["is_past"]:
+            show_notify_button(f"event-notify-{event['id']}", logic.notify_app_event,
+                               (user, event["id"]))
         yes_col, no_col = st.columns(2)
         if yes_col.button("Going", key=f"event-going-{event['id']}"):
             result = logic.respond_app_event(user, event["id"], "going")
@@ -263,6 +269,20 @@ def open_profile(profile_id, my_id):
     """Button callback: go to a user's profile page."""
     st.session_state.profile_id = profile_id
     st.session_state.page = "My profile" if profile_id == my_id else "People"
+
+
+def show_notify_button(key, action, args):
+    """Render a notification action or its disabled SMTP setup state."""
+    if not logic.app_email_notifications_configured():
+        st.button("Notify bro", key=key, disabled=True)
+        st.caption("Email notifications are not set up")
+        return
+    if st.button("Notify bro", key=key):
+        result = action(*args)
+        if result.success:
+            st.success(result.message)
+        else:
+            st.warning(result.message)
 
 
 def open_venue(venue_id):
@@ -357,6 +377,15 @@ def show_profile(user, profile_id):
             if result.success:
                 st.rerun()
             st.error(result.message)
+        with st.form("email-notifications-form"):
+            enabled = st.checkbox("Email notifications", value=logic.app_email_notifications_enabled(user))
+            save_notifications = st.form_submit_button("Save notification settings")
+        if save_notifications:
+            result = logic.set_app_email_notifications(user, enabled)
+            if result.success:
+                st.success(result.message)
+            else:
+                st.error(result.message)
 
     columns = st.columns(4)
     for column, (label, items) in zip(columns, [

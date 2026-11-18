@@ -146,7 +146,8 @@ def _table_statements(backend):
             id {identity}, google_sub TEXT NOT NULL UNIQUE, email TEXT NOT NULL,
             username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE,
             role TEXT NOT NULL CHECK (role IN ('customer', 'business')),
-            image_id INTEGER REFERENCES images(id), created_at TEXT NOT NULL
+            image_id INTEGER REFERENCES images(id), email_notifications INTEGER NOT NULL DEFAULT 1
+            CHECK (email_notifications IN (0, 1)), created_at TEXT NOT NULL
         )""",
         f"""CREATE TABLE IF NOT EXISTS venues (
             id {identity}, name TEXT NOT NULL, neighbourhood TEXT NOT NULL, address TEXT NOT NULL,
@@ -202,20 +203,30 @@ def _table_statements(backend):
             response TEXT NOT NULL CHECK (response IN ('going', 'not_going')), responded_at TEXT NOT NULL,
             UNIQUE (event_id, user_id)
         )""",
+        f"""CREATE TABLE IF NOT EXISTS notifications (
+            id {identity}, conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+            sender_id INTEGER NOT NULL REFERENCES users(id), recipient_id INTEGER NOT NULL REFERENCES users(id),
+            sent_at TEXT NOT NULL
+        )""",
     ]
+
+
+def _rls_table_names():
+    """Return every application table that needs Postgres row-level security."""
+    return ("images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
+            "conversations", "conversation_members", "messages", "events", "event_responses", "notifications")
 
 
 def init_db():
     """Create application tables and enable Postgres row-level security."""
     backend, _ = _backend()
     with _connect() as connection:
-        tables = ("images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
-                  "conversations", "conversation_members", "messages", "events", "event_responses")
-        for statement, table in zip(_table_statements(backend), tables):
+        for statement, table in zip(_table_statements(backend), _rls_table_names()):
             _execute(connection, backend, statement)
             if backend == "postgres":
                 _execute(connection, backend, f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         _ensure_user_image_column(connection, backend)
+        _ensure_email_notifications_column(connection, backend)
 
 
 def _ensure_user_image_column(connection, backend):
@@ -228,6 +239,19 @@ def _ensure_user_image_column(connection, backend):
             "WHERE table_schema = current_schema() AND table_name = ?", ("users",)).fetchall()}
     if "image_id" not in columns:
         _execute(connection, backend, "ALTER TABLE users ADD COLUMN image_id INTEGER REFERENCES images(id)")
+
+
+def _ensure_email_notifications_column(connection, backend):
+    """Add the default-on email preference to databases created earlier."""
+    if backend == "sqlite":
+        columns = {row[1] for row in _execute(connection, backend, "PRAGMA table_info(users)").fetchall()}
+    else:
+        columns = {row[0] for row in _execute(connection, backend,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ?", ("users",)).fetchall()}
+    if "email_notifications" not in columns:
+        _execute(connection, backend,
+            "ALTER TABLE users ADD COLUMN email_notifications INTEGER NOT NULL DEFAULT 1 CHECK (email_notifications IN (0, 1))")
 
 
 def _insert(connection, backend, sql, parameters):
@@ -379,6 +403,41 @@ def get_user_by_id(user_id):
     with _connect() as connection:
         row = _execute(connection, backend, "SELECT id, username, role, image_id FROM users WHERE id = ?", (user_id,)).fetchone()
         return _row_dict(row, ("id", "username", "role", "image_id"))
+
+
+def get_email_notification_settings(user_id):
+    """Return a user's private email address and notification preference."""
+    row = _query("SELECT email, email_notifications FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _row_dict(row, ("email", "email_notifications"))
+
+
+def get_email_notifications(user_id):
+    """Return whether a user has email notifications enabled."""
+    row = _query("SELECT email_notifications FROM users WHERE id = ?", (user_id,)).fetchone()
+    return bool(row[0]) if row else None
+
+
+def set_email_notifications(user_id, enabled):
+    """Update a user's email notification preference."""
+    _query("UPDATE users SET email_notifications = ? WHERE id = ?", (int(bool(enabled)), user_id))
+    return get_user_by_id(user_id) is not None
+
+
+def get_notification_sent_at(conversation_id, recipient_id):
+    """Return the latest sent time for this recipient in a conversation."""
+    row = _query("SELECT sent_at FROM notifications WHERE conversation_id = ? AND recipient_id = ? "
+                 "ORDER BY sent_at DESC, id DESC LIMIT 1",
+                 (conversation_id, recipient_id)).fetchone()
+    return row[0] if row else None
+
+
+def add_notification(conversation_id, sender_id, recipient_id, sent_at):
+    """Record one successfully sent notification."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        return _insert(connection, backend,
+            "INSERT INTO notifications (conversation_id, sender_id, recipient_id, sent_at) VALUES (?, ?, ?, ?)",
+            (conversation_id, sender_id, recipient_id, sent_at))
 
 
 def list_users():

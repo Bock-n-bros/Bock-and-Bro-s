@@ -358,3 +358,11 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** community posts add visual context without changing review counts or averages, and the section stays absent when there are no photos.
 - **Instead of:** mixing posts into review data or loading image bytes with every feed and venue query.
 - **Where:** `db.py`, `logic.py`, `app.py` and `tests/test_venue_photos.py`.
+
+### D-053 · Email notices respect consent and a per-recipient cooldown
+*18 Nov 2026 · email notifications*
+
+- **What:** direct chats and unanswered meetups send content-free email through `mail.py`; users can opt out, and each recipient gets at most one notice per conversation per hour, regardless of sender.
+- **Why:** email can bring members back without revealing private message text, and a recipient-wide cooldown prevents a group from repeatedly notifying one person.
+- **Instead of:** message excerpts, app-layer SMTP calls, notifications for opted-out users or a separate cooldown for every sender.
+- **Where:** `db.py`, `logic.py`, `mail.py`, `app.py`, `specs/10-notifications.md` and `.streamlit/secrets.toml.example`.

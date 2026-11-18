@@ -120,15 +120,15 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Where:** `tests/test_auth.py`, `tests/test_reviews.py`; manual list in `specs/04-google-login.md`.
 
 ### D-024 · Only the Streamlit auth extra replaces bcrypt
-*18 Nov 2026 · step 7*
+*18 Nov 2026 · step 6*
 
 - **What:** the project uses `streamlit[auth]` and removes `bcrypt`.
-- **Why:** `st.login` only works with the `streamlit[auth]` extra, which installs Authlib. bcrypt hashed passwords, and the app no longer has any.
+- **Why:** Streamlit's OpenID Connect login supplies the approved Google login without a separate password library.
 - **Instead of:** adding a direct Authlib dependency or keeping password hashing in the app.
 - **Where:** `pyproject.toml` and `uv.lock`.
 
 ### D-025 · The users schema follows the new profile shape without a migration
-*18 Nov 2026 · step 7*
+*18 Nov 2026 · step 6*
 
 - **What:** `db.py` creates users with Google subject, email, username, username key, role, and creation time only.
 - **Why:** the spec explicitly asks the team to delete the local database once, so migration code would add work outside the feature.
@@ -136,15 +136,15 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Where:** `db.py` users table and the setup note in `README.md`.
 
 ### D-026 · App authentication stays behind logic wrappers
-*18 Nov 2026 · step 7*
+*18 Nov 2026 · step 6*
 
-- **What:** `app.py` never talks to the database. It gives Google's id and email to two small functions in `logic.py` (`find_app_google_user`, `complete_app_profile`), which call `db.py`.
-- **Why:** keeps the three-layer rule (D-002), so the login rules can be tested without a browser.
-- **Instead of:** `app.py` calling `db.py` directly.
+- **What:** `app.py` passes the Streamlit Google identity to logic wrappers, which call the database functions and return the stable public user dictionary.
+- **Why:** the existing screen/database boundary remains explainable and the email stays out of logged-in user data used by venue features.
+- **Instead of:** importing `db.py` directly in the Streamlit screen.
 - **Where:** `app.py` and `logic.py`.
 
 ### D-027 · Missing auth settings show a setup warning
-*18 Nov 2026 · step 7*
+*18 Nov 2026 · step 6*
 
 - **What:** the app checks the required `[auth]` keys and shows "Google login is not set up — see README" when they are unavailable.
 - **Why:** an unfinished local setup should be understandable instead of raising a configuration exception.
@@ -152,41 +152,225 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Where:** `app.py` and `.streamlit/secrets.toml.example`.
 
 ### D-028 · Review rows expose usernames but not reviewer emails
-*18 Nov 2026 · step 7*
+*18 Nov 2026 · step 6*
 
 - **What:** venue review results include the reviewer's username and omit their Google email.
 - **Why:** users need an identifiable display name, but email is private account data.
 - **Instead of:** selecting all user columns when joining reviews.
 - **Where:** `db.py` review query and `tests/test_reviews.py`.
 
-### D-029 · Users are identified by Google's `sub`, not their email
-*18 Nov 2026 · step 7*
+---
 
-- **What:** each user row stores `google_sub`, Google's permanent id for the account, and the app finds users by it. The email is stored but never shown.
-- **Why:** an email address can change; `sub` never does, so a user keeps their profile and reviews.
-- **Instead of:** using the email as the key.
-- **Where:** `db.get_user_by_google_sub`, `users` table.
+## Direct messages (spec 08, part 1)
 
-### D-030 · The logged-in user stays {id, username, role}
-*18 Nov 2026 · step 7*
+### D-029 · Direct messages use the same tables as future group chats
+*18 Nov 2026 · spec 08*
 
-- **What:** `logic.find_google_user` returns only id, username and role, the same shape as the old password login.
-- **Why:** reviews and the team's chat, leaderboard and map use this dictionary, so none of them needed changes.
-- **Instead of:** passing Google's full user data around, which would expose the email and break other features.
-- **Where:** `logic.find_google_user`.
+- **What:** `conversations`, `conversation_members` and `messages` tables; a direct message is a conversation with `is_group = 0` and two members.
+- **Why:** group chats (rest of spec 08) only need a name and more members, not new tables.
+- **Instead of:** a single `messages` table with sender and receiver columns.
+- **Where:** `db.py` `init_db`.
 
-### D-031 · First login asks for username, role and 18+
-*18 Nov 2026 · step 7*
+### D-030 · One direct conversation per pair of users
+*18 Nov 2026 · spec 08*
 
-- **What:** a Google account without a profile sees "Finish your profile". `logic.complete_profile` checks the username rules, that the name is free, the role and the 18+ box before saving.
-- **Why:** Google knows neither our roles nor a public name, and showing real Google names publicly is a privacy problem. The rules from spec 01 stay.
-- **Instead of:** using the Google name and making everyone a customer.
-- **Where:** profile form in `app.py`, `logic.complete_profile`.
+- **What:** starting a message to someone you already talk to reopens the existing conversation, from either side.
+- **Why:** one continuous dialogue per pair, like every chat app.
+- **Instead of:** a new thread every time someone presses Message.
+- **Where:** `logic.start_direct_conversation`.
 
-### D-032 · The login is read from Streamlit's signed cookie on every page load
-*18 Nov 2026 · step 7*
+### D-031 · Membership is checked in logic on every read and send
+*18 Nov 2026 · spec 08*
 
-- **What:** `app.py` reads `st.user` and loads the user from the database by `sub` on every rerun. The login is no longer copied into `st.session_state`.
-- **Why:** one source of truth that users cannot edit. The old "session out of date" check is no longer needed.
-- **Instead of:** storing the user in session state at login, as the password version did.
-- **Where:** top of `app.py`.
+- **What:** `get_conversation_messages` returns nothing and `send_message` refuses unless the user is a member.
+- **Why:** private messages must stay private even if a conversation id is guessed (same idea as D-009).
+- **Instead of:** only hiding other people's conversations in the list.
+- **Where:** `logic.py` and `tests/test_messages.py`.
+
+### D-032 · New messages appear by refreshing every 5 seconds
+*18 Nov 2026 · spec 08*
+
+- **What:** the open conversation is a `st.fragment(run_every=5)`, which re-reads only the message list.
+- **Why:** Streamlit has no push/WebSocket for app data; a short refresh is simple and enough for the demo.
+- **Instead of:** real-time delivery through an external service.
+- **Where:** `app.py` `show_conversation`.
+
+### D-033 · Messages are plain text, max 1000 characters, trimmed
+*18 Nov 2026 · spec 08*
+
+- **What:** empty or over-long messages are refused; text is shown with `st.text`.
+- **Why:** same protection against injected formatting and links as reviews (D-012).
+- **Instead of:** Markdown rendering.
+- **Where:** `logic.send_message`, `app.py`.
+
+### D-034 · User search escapes LIKE wildcards
+*18 Nov 2026 · spec 08*
+
+- **What:** `%` and `_` typed in the search box match literally.
+- **Why:** usernames may contain `_`, which SQL `LIKE` would otherwise treat as "any character".
+- **Instead of:** passing the raw search text into the pattern.
+- **Where:** `db.search_users`.
+
+### D-035 · Message times are shown in Lisbon time
+*18 Nov 2026 · spec 08*
+
+- **What:** timestamps are stored in UTC and displayed as "18 Nov, 21:30" in Europe/Lisbon time.
+- **Why:** the app is Lisbon-only, and summer time would otherwise show times an hour off.
+- **Instead of:** showing UTC.
+- **Where:** `logic.format_message_time`.
+
+## Following and profiles (spec 05)
+
+### D-036 · Friends are mutual follows, not a separate friend request
+*18 Nov 2026 · spec 05*
+
+- **What:** "Friends" on a profile are the users you follow who also follow you back.
+- **Why:** one simple follow model (like Instagram) gives both a follower list and a friend list without extra tables or accept/decline screens.
+- **Instead of:** Facebook-style friend requests.
+- **Where:** `logic.get_profile`.
+
+### D-037 · Users follow bars (venues), not bar-owner accounts
+*18 Nov 2026 · spec 05*
+
+- **What:** a separate `venue_follows` table; the Follow bar button is on the venue page.
+- **Why:** bar owners are not linked to a venue yet (spec 04), and users think of following "Park Bar", not an account.
+- **Instead of:** following the bar owner's user account as the way to follow a bar.
+- **Where:** `db.py` `venue_follows`, `logic.follow_venue`.
+
+### D-038 · Following twice or unfollowing twice is not an error
+*18 Nov 2026 · spec 05*
+
+- **What:** repeat follows and unfollows succeed and change nothing; the database also has a unique constraint per pair.
+- **Why:** a double click or a stale page should never create duplicates or show an error.
+- **Instead of:** refusing the second click.
+- **Where:** `db.add_follow`, `db.add_venue_follow`, `tests/test_follows.py`.
+
+### D-039 · Page changes from buttons use callbacks
+*18 Nov 2026 · spec 05*
+
+- **What:** View / Message / bar buttons set the sidebar page through `on_click` callbacks.
+- **Why:** Streamlit only allows changing a widget's value (the page radio) before it is drawn, which is when callbacks run.
+- **Instead of:** setting `st.session_state.page` after the sidebar, which raises an error.
+- **Where:** `app.py` `open_profile`, `open_venue`, `open_chat`.
+
+## Posts and feed (spec 06)
+
+### D-040 · Photos are files in `uploads/`, only the file name is in the database (Replaced by D-045)
+*18 Nov 2026 · spec 06*
+
+- **What:** `db.create_post` writes the photo to `uploads/` under a random name and stores that name in `posts.image_path`; `uploads/` is in `.gitignore`.
+- **Why:** keeps the database small, and storage stays in `db.py` so a later move to Supabase Storage touches one file (like D-004).
+- **Instead of:** storing image bytes in SQLite.
+- **Where:** `db.py` `UPLOADS_DIR`, `create_post`, `get_image_file`.
+
+### D-041 · Photos are checked by type, size and file signature (Replaced by D-045)
+*18 Nov 2026 · spec 06*
+
+- **What:** only JPG/PNG/WEBP up to 5 MB, and the first bytes must match the type; `.streamlit/config.toml` also caps uploads at 5 MB.
+- **Why:** a renamed file (for example a script called `photo.png`) is refused, without adding an image library.
+- **Instead of:** trusting the file extension, or adding Pillow as a new dependency.
+- **Where:** `logic._image_problem`, `.streamlit/config.toml`.
+
+### D-042 · The feed includes posts about bars you follow
+*18 Nov 2026 · spec 06*
+
+- **What:** feed = your own posts + posts by people you follow + posts tagged with bars you follow, newest first, max 50.
+- **Why:** following a bar (D-037) should show what happens there, which is the point of following it.
+- **Instead of:** only posts from followed people.
+- **Where:** `db.get_feed_posts`.
+
+### D-043 · A post must be tied to a venue and have text, a photo or both
+*18 Nov 2026 · spec 06*
+
+- **What:** venue is required; text max 500 characters; empty posts are refused; if saving the row fails the photo file is deleted again.
+- **Why:** every post becomes content on a venue page, and no orphan files are left behind.
+- **Instead of:** optional venue tags.
+- **Where:** `logic.create_post`, `db.create_post`.
+
+### D-044 · SQLite and Postgres share one portable database layer
+*18 Nov 2026 · feature/supabase merged into feature/feed*
+
+- **What:** table setup and feed, follow, and messaging queries use backend-aware statements, placeholders and insert helpers.
+- **Why:** local SQLite and deployed Postgres need to run the same application behavior without Supabase in local tests.
+- **Instead of:** SQLite-specific SQL in feed and chat functions.
+- **Where:** `db.py` `_table_statements`, `_execute`, `_insert` and feed/chat storage functions.
+
+### D-045 · Post images are compressed database records
+*18 Nov 2026 · permanent image storage*
+
+- **What:** validated JPEG and PNG images are resized to at most 1200 pixels wide and stored as BLOB/BYTEA records; posts keep an `image_id`.
+- **Why:** database storage survives Streamlit restarts and one image is fetched only when displayed.
+- **Instead of:** files in `uploads/` or loading image bytes into every feed result.
+- **Where:** `db.py` `images`, `create_post`, `get_post_image` and post queries.
+
+### D-046 · Comments allow 500 characters and author-only deletion
+*18 Nov 2026 · spec 07 update*
+
+- **What:** comments are trimmed, limited to 500 characters, shown as plain text, and deletable only by their author; business users may also comment.
+- **Why:** the project uses the same 500-character ceiling as reviews and lets people correct their own posts without granting broad moderation powers.
+- **Instead of:** the earlier 300-character limit with no deletion; text formatting through Markdown or HTML.
+- **Where:** `logic.py`, `app.py`, `db.py`, and `specs/07-comments.md`.
+
+### D-047 · Likes toggle per user and post
+*18 Nov 2026 · spec 09*
+
+- **What:** a unique database constraint allows one like per user and post; the button toggles it, and Python calculates visible counts and the current user's state.
+- **Why:** the database protects integrity even when logic is bypassed, while aggregation stays simple and portable.
+- **Instead of:** duplicate likes, SQL `GROUP BY`, notifications or a list of likers.
+- **Where:** `db.py`, `logic.py`, `app.py`, and `specs/09-likes.md`.
+
+### D-048 · Profile pictures use the shared image table
+*18 Nov 2026 · spec 05 update*
+
+- **What:** users reference JPEG or PNG images in the existing image table; uploads are capped at 5 MB and resized to 400 pixels wide. Missing pictures use a circular username initial.
+- **Why:** one permanent storage path serves posts and profiles without external avatar services.
+- **Instead of:** profile-specific file storage, remote avatar lookup or a blank placeholder.
+- **Where:** `db.py`, `logic.py`, `app.py` and `specs/05-follows-and-profiles.md`.
+
+### D-049 · People marks businesses with the text “Bar”
+*18 Nov 2026 · spec 05 update*
+
+- **What:** People results show the word “Bar” for business profiles and no badge for customers; search remains username-only.
+- **Why:** text communicates the account type without relying on color and preserves email privacy.
+- **Instead of:** a color-only marker or searching account email.
+- **Where:** `app.py`, `db.py`, `logic.py` and `specs/05-follows-and-profiles.md`.
+
+### D-050 · Groups have a creator and a 20-member limit
+*18 Nov 2026 · group messaging*
+
+- **What:** group creators manage members and names; other members may leave. Unnamed groups use the first three member usernames as their title.
+- **Why:** groups need clear ownership and a readable fallback without requiring every creator to name the conversation.
+- **Instead of:** required names, unrestricted membership or allowing the creator to leave while retaining creator permissions.
+- **Where:** `logic.py`, `db.py`, `app.py` and `specs/08-messages.md`.
+
+### D-051 · Meetups belong to group conversations
+*18 Nov 2026 · Bock a Bro events*
+
+- **What:** group members create venue-linked meetups, update yes/no responses, and only the creator may cancel; capacity is checked before accepting a yes. Cancellation deletes the event and its responses.
+- **Why:** events stay within the group context and capacity feedback is clear; the current schema has no cancellation state to preserve.
+- **Instead of:** standalone events, immutable responses, silently rejecting full events or adding a cancelled-state column.
+- **Where:** `db.py`, `logic.py`, `app.py` and `specs/08-messages.md`.
+
+### D-052 · Venue community photos remain separate from reviews
+*18 Nov 2026 · venue photos*
+
+- **What:** venue pages show up to twelve newest photo posts in a separate section after reviews; selecting one opens that post in the feed.
+- **Why:** community posts add visual context without changing review counts or averages, and the section stays absent when there are no photos.
+- **Instead of:** mixing posts into review data or loading image bytes with every feed and venue query.
+- **Where:** `db.py`, `logic.py`, `app.py` and `tests/test_venue_photos.py`.
+
+### D-053 · Email notices respect consent and a per-recipient cooldown
+*18 Nov 2026 · email notifications*
+
+- **What:** direct chats and unanswered meetups send content-free email through `mail.py`; users can opt out, and each recipient gets at most one notice per conversation per hour, regardless of sender.
+- **Why:** email can bring members back without revealing private message text, and a recipient-wide cooldown prevents a group from repeatedly notifying one person.
+- **Instead of:** message excerpts, app-layer SMTP calls, notifications for opted-out users or a separate cooldown for every sender.
+- **Where:** `db.py`, `logic.py`, `mail.py`, `app.py`, `specs/10-notifications.md` and `.streamlit/secrets.toml.example`.
+
+### D-046 · Tables are created once per run, not on every query
+*18 Nov 2026 · Supabase performance*
+
+- **What:** `init_db()` remembers which database it has already prepared and returns immediately on later calls.
+- **Why:** on Supabase every CREATE/ALTER statement is a network round trip; with init_db called from many read functions, the map page sent hundreds of them and became very slow.
+- **Instead of:** checking all ten tables before every read.
+- **Where:** `db.init_db`.

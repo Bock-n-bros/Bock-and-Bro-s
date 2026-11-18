@@ -1,11 +1,15 @@
 """Validate account actions and apply authentication rules."""
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import logging
+import math
+from zoneinfo import ZoneInfo
 import csv
 from pathlib import Path
 
 import db
+import mail
 
 
 VENUE_TYPES = {"bar", "cervejaria", "pub", "rooftop", "café", "sports bar"}
@@ -62,6 +66,84 @@ class ReviewResult:
 
     success: bool
     message: str
+
+
+@dataclass
+class MessageResult:
+    """Describe the outcome of a messaging action."""
+
+    success: bool
+    message: str
+    conversation_id: int | None = None
+
+
+@dataclass
+class EventResult:
+    """Describe the outcome of an event action."""
+
+    success: bool
+    message: str
+    event_id: int | None = None
+
+
+@dataclass
+class FollowResult:
+    """Describe the outcome of a follow or unfollow action."""
+
+    success: bool
+    message: str
+
+
+@dataclass
+class PostResult:
+    """Describe the outcome of creating a post."""
+
+    success: bool
+    message: str
+    post_id: int | None = None
+
+
+@dataclass
+class CommentResult:
+    """Describe the outcome of adding or deleting a comment."""
+
+    success: bool
+    message: str
+    comment_id: int | None = None
+
+
+@dataclass
+class LikeResult:
+    """Describe the outcome of toggling a like."""
+
+    success: bool
+    message: str
+    liked: bool = False
+
+
+@dataclass
+class ProfilePictureResult:
+    """Describe the outcome of changing a profile picture."""
+
+    success: bool
+    message: str
+
+
+@dataclass
+class NotificationResult:
+    """Describe the outcome of a notification request."""
+
+    success: bool
+    message: str
+    sent_count: int = 0
+
+
+MAX_POST_LENGTH = 500
+IMAGE_TYPES = ["jpg", "jpeg", "png"]
+MAX_MESSAGE_LENGTH = 1000
+MAX_GROUP_NAME_LENGTH = 50
+MAX_GROUP_MEMBERS = 20
+LISBON = ZoneInfo("Europe/Lisbon")
 
 
 def find_google_user(database, google_sub):
@@ -298,3 +380,868 @@ def sort_venues(venues, database, sort_by="name"):
 def can_view_venues(user):
     """Return whether a logged-in customer or business may view venues."""
     return isinstance(user, dict) and user.get("role") in {"customer", "business"}
+
+
+def _is_logged_in(user):
+    """Return whether a user dictionary belongs to a logged-in profile."""
+    return isinstance(user, dict) and bool(user.get("id")) and user.get("role") in {"customer", "business"}
+
+
+def search_people(database, user, text):
+    """Find other users by username; an empty search finds nobody."""
+    if not _is_logged_in(user) or not isinstance(text, str) or not text.strip():
+        return []
+    return database.search_users(text.strip(), exclude_user_id=user["id"])
+
+
+def start_direct_conversation(database, user, other_user_id, now=None):
+    """Open the direct conversation with another user, creating it only once."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to send messages.")
+    if other_user_id == user["id"]:
+        return MessageResult(False, "You cannot message yourself.")
+    if database.get_user_by_id(other_user_id) is None:
+        return MessageResult(False, "That user could not be found.")
+    existing = database.find_direct_conversation(user["id"], other_user_id)
+    if existing is not None:
+        return MessageResult(True, "Conversation opened.", existing)
+    conversation_id = database.create_conversation(
+        user["id"], [user["id"], other_user_id], now=now
+    )
+    return MessageResult(True, "Conversation started.", conversation_id)
+
+
+def create_group_conversation(database, user, name, member_ids, now=None):
+    """Create a named or unnamed group with the current user as its owner."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to create a group.")
+    if name is not None and not isinstance(name, str):
+        return MessageResult(False, "Group name must be text.")
+    name = name.strip() if name else None
+    name = name or None
+    if name and len(name) > MAX_GROUP_NAME_LENGTH:
+        return MessageResult(False, "Group names can be at most 50 characters.")
+    if not isinstance(member_ids, (list, tuple)):
+        return MessageResult(False, "Choose group members.")
+    if len(member_ids) < 2:
+        return MessageResult(False, "A group needs at least three members, including you.")
+    if len(member_ids) + 1 > MAX_GROUP_MEMBERS:
+        return MessageResult(False, "Groups can have at most 20 members.")
+    if user["id"] in member_ids or len(set(member_ids)) != len(member_ids):
+        return MessageResult(False, "Choose each other member once.")
+    if any(database.get_user_by_id(member_id) is None for member_id in member_ids):
+        return MessageResult(False, "A selected member could not be found.")
+    conversation_id = database.create_conversation(
+        user["id"], [user["id"], *member_ids], name=name, is_group=True, now=now
+    )
+    return MessageResult(True, "Group created.", conversation_id)
+
+
+def _owned_group(database, user, conversation_id):
+    """Return a group owned by the user, or None."""
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None or not conversation["is_group"] or conversation["created_by"] != user["id"]:
+        return None
+    return conversation
+
+
+def add_group_member(database, user, conversation_id, member_id, now=None):
+    """Let a group's creator add a member, respecting the member limit."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to manage this group.")
+    conversation = _owned_group(database, user, conversation_id)
+    if conversation is None:
+        return MessageResult(False, "Only the group creator can add members.")
+    if database.get_user_by_id(member_id) is None:
+        return MessageResult(False, "That user could not be found.")
+    if database.is_conversation_member(conversation_id, member_id):
+        return MessageResult(True, "That user is already a member.", conversation_id)
+    if len(database.get_conversation_members(conversation_id)) >= MAX_GROUP_MEMBERS:
+        return MessageResult(False, "Groups can have at most 20 members.")
+    database.add_conversation_member(conversation_id, member_id, now=now)
+    return MessageResult(True, "Member added.", conversation_id)
+
+
+def remove_group_member(database, user, conversation_id, member_id):
+    """Let a group's creator remove another member."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to manage this group.")
+    if _owned_group(database, user, conversation_id) is None:
+        return MessageResult(False, "Only the group creator can remove members.")
+    if member_id == user["id"]:
+        return MessageResult(False, "The group creator cannot remove themselves.")
+    if not database.is_conversation_member(conversation_id, member_id):
+        return MessageResult(False, "That user is not a group member.")
+    database.remove_conversation_member(conversation_id, member_id)
+    return MessageResult(True, "Member removed.", conversation_id)
+
+
+def leave_group(database, user, conversation_id):
+    """Let a non-creator member leave a group."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to leave this group.")
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None or not conversation["is_group"]:
+        return MessageResult(False, "That group could not be found.")
+    if conversation["created_by"] == user["id"]:
+        return MessageResult(False, "The group creator cannot leave the group.")
+    if not database.is_conversation_member(conversation_id, user["id"]):
+        return MessageResult(False, "You are not a member of this group.")
+    database.remove_conversation_member(conversation_id, user["id"])
+    return MessageResult(True, "You left the group.", conversation_id)
+
+
+def rename_group(database, user, conversation_id, name):
+    """Let the group creator change or clear its name."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to manage this group.")
+    if _owned_group(database, user, conversation_id) is None:
+        return MessageResult(False, "Only the group creator can change the name.")
+    if name is not None and not isinstance(name, str):
+        return MessageResult(False, "Group name must be text.")
+    name = name.strip() if name else None
+    name = name or None
+    if name and len(name) > MAX_GROUP_NAME_LENGTH:
+        return MessageResult(False, "Group names can be at most 50 characters.")
+    database.rename_conversation(conversation_id, name)
+    return MessageResult(True, "Group name updated.", conversation_id)
+
+
+def send_message(database, user, conversation_id, text, now=None):
+    """Check membership and text, then save the message."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to send messages.")
+    if not database.is_conversation_member(conversation_id, user["id"]):
+        return MessageResult(False, "You are not part of this conversation.")
+    if not isinstance(text, str) or not text.strip():
+        return MessageResult(False, "Write a message first.")
+    text = text.strip()
+    if len(text) > MAX_MESSAGE_LENGTH:
+        return MessageResult(False, f"Messages can be at most {MAX_MESSAGE_LENGTH} characters.")
+    database.add_message(conversation_id, user["id"], text, now=now)
+    return MessageResult(True, "Message sent.", conversation_id)
+
+
+def get_conversation_messages(database, user, conversation_id):
+    """Return a conversation's messages, or None if the user is not a member."""
+    if not _is_logged_in(user) or not database.is_conversation_member(conversation_id, user["id"]):
+        return None
+    return database.get_messages(conversation_id)
+
+
+def list_conversations(database, user):
+    """Return the user's conversations, most recent activity first."""
+    if not _is_logged_in(user):
+        return []
+    conversations = database.get_conversations_for_user(user["id"])
+    for conversation in conversations:
+        conversation["members"] = (database.get_conversation_members(conversation["id"])
+                                   if conversation["is_group"] else [])
+        if conversation["name"]:
+            conversation["title"] = conversation["name"]
+        elif conversation["is_group"]:
+            members = conversation["members"]
+            conversation["title"] = ", ".join(member["username"] for member in members[:3])
+        else:
+            conversation["title"] = conversation["other_username"] or "Conversation"
+    return sorted(
+        conversations,
+        key=lambda item: (item["last_message_at"] or item["created_at"], item["id"]),
+        reverse=True,
+    )
+
+
+def list_group_candidates(database, user):
+    """Return other public users who can be invited to a group."""
+    if not _is_logged_in(user):
+        return []
+    return [person for person in database.list_users() if person["id"] != user["id"]]
+
+
+def format_message_time(timestamp):
+    """Format a stored UTC timestamp as Lisbon time, e.g. '18 Nov, 21:30'."""
+    moment = datetime.fromisoformat(timestamp)
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(LISBON)
+    return f"{moment.day} {moment.strftime('%b, %H:%M')}"
+
+
+def _event_datetime(value):
+    """Parse an ISO date and interpret a naive value as Lisbon local time."""
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str):
+        moment = datetime.fromisoformat(value)
+    else:
+        raise ValueError("Choose a valid date and time.")
+    return moment.replace(tzinfo=LISBON) if moment.tzinfo is None else moment
+
+
+def format_event_time(timestamp):
+    """Format an ISO event time for Lisbon readers."""
+    moment = _event_datetime(timestamp).astimezone(LISBON)
+    return f"{moment.day} {moment.strftime('%b %Y, %H:%M')}"
+
+
+def create_event(database, user, conversation_id, venue_id, title, starts_at,
+                 max_attendees=None, now=None):
+    """Validate group membership and save a venue meetup."""
+    if not _is_logged_in(user):
+        return EventResult(False, "Log in to create a meetup.")
+    conversation = database.get_conversation(conversation_id)
+    if (conversation is None or not conversation["is_group"]
+            or not database.is_conversation_member(conversation_id, user["id"])):
+        return EventResult(False, "Only group members can create meetups.")
+    if database.get_venue_by_id(venue_id) is None:
+        return EventResult(False, "Choose an existing bar or café.")
+    if not isinstance(title, str) or not title.strip():
+        return EventResult(False, "Enter a meetup title.")
+    if max_attendees is not None and (isinstance(max_attendees, bool)
+            or not isinstance(max_attendees, int) or max_attendees < 1):
+        return EventResult(False, "Maximum attendees must be a positive whole number.")
+    try:
+        start = _event_datetime(starts_at).isoformat()
+    except (TypeError, ValueError):
+        return EventResult(False, "Choose a valid date and time.")
+    event_id = database.add_event(conversation_id, venue_id, title.strip(), start,
+                                  max_attendees, user["id"], now=now)
+    return EventResult(True, "Meetup created.", event_id)
+
+
+def get_conversation_events(database, user, conversation_id, now=None):
+    """Return a group's upcoming and previous events for one member."""
+    if (not _is_logged_in(user)
+            or not database.is_conversation_member(conversation_id, user["id"])):
+        return None
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None:
+        return None
+    current = _event_datetime(now) if now is not None else datetime.now(LISBON)
+    result = {"is_group": bool(conversation["is_group"]), "upcoming": [], "past": []}
+    if not conversation["is_group"]:
+        return result
+    for event in database.get_events_for_conversation(conversation_id):
+        responses = database.get_event_responses(event["id"])
+        attendees = [row for row in responses if row["response"] == "going"]
+        event["attendees"] = attendees
+        event["going_count"] = len(attendees)
+        event["my_response"] = database.get_event_response(event["id"], user["id"])
+        event["is_past"] = _event_datetime(event["starts_at"]) < current
+        result["past" if event["is_past"] else "upcoming"].append(event)
+    result["past"].sort(key=lambda event: _event_datetime(event["starts_at"]), reverse=True)
+    result["upcoming"].sort(key=lambda event: _event_datetime(event["starts_at"]))
+    return result
+
+
+def respond_to_event(database, user, event_id, response, now=None):
+    """Save a member's yes/no response while enforcing the attendee cap."""
+    if not _is_logged_in(user):
+        return EventResult(False, "Log in to respond to this meetup.")
+    event = database.get_event(event_id)
+    if event is None or not database.is_conversation_member(event["conversation_id"], user["id"]):
+        return EventResult(False, "You are not a member of this meetup's group.")
+    if response not in {"going", "not_going"}:
+        return EventResult(False, "Choose going or not going.")
+    previous = database.get_event_response(event_id, user["id"])
+    if response == "going" and previous != "going" and event["max_attendees"] is not None:
+        going_count = sum(row["response"] == "going" for row in database.get_event_responses(event_id))
+        if going_count >= event["max_attendees"]:
+            return EventResult(False, "This meetup is full. There are no places left.")
+    database.save_event_response(event_id, user["id"], response, now=now)
+    return EventResult(True, "Your response was saved.", event_id)
+
+
+def get_event_attendees(database, user, event_id):
+    """Return the going members of an event, or no rows for an outsider."""
+    event = database.get_event(event_id)
+    if (not _is_logged_in(user) or event is None
+            or not database.is_conversation_member(event["conversation_id"], user["id"])):
+        return None
+    return [row for row in database.get_event_responses(event_id) if row["response"] == "going"]
+
+
+def cancel_event(database, user, event_id):
+    """Delete a meetup only when requested by its creator."""
+    if not _is_logged_in(user):
+        return EventResult(False, "Log in to cancel this meetup.")
+    event = database.get_event(event_id)
+    if event is None:
+        return EventResult(False, "That meetup could not be found.")
+    if event["created_by"] != user["id"]:
+        return EventResult(False, "Only the meetup creator can cancel it.")
+    database.delete_event(event_id)
+    return EventResult(True, "Meetup cancelled.", event_id)
+
+
+def _notification_cooldown(database, conversation_id, recipient_id, now):
+    """Return remaining cooldown time, if a recent notice was sent."""
+    last_sent = database.get_notification_sent_at(conversation_id, recipient_id)
+    if last_sent is None:
+        return None
+    previous = datetime.fromisoformat(last_sent)
+    if previous.tzinfo is None:
+        previous = previous.replace(tzinfo=timezone.utc)
+    remaining = timedelta(hours=1) - (now - previous.astimezone(timezone.utc))
+    return remaining if remaining.total_seconds() > 0 else None
+
+
+def _send_notification(database, sender, conversation, recipient_id, subject, details, now):
+    """Check consent and cooldown, send one notice, and record successful delivery."""
+    recipient = database.get_email_notification_settings(recipient_id)
+    if recipient is None:
+        return "missing"
+    if not recipient["email_notifications"]:
+        return "disabled"
+    remaining = _notification_cooldown(database, conversation["id"], recipient_id, now)
+    if remaining is not None:
+        return f"cooldown:{max(1, math.ceil(remaining.total_seconds() / 60))}"
+    body = (f"{sender['username']} notified you in {conversation['title']}.\n\n"
+            f"{details}\n\nOpen Bock'n Bros: {mail.app_url()}")
+    try:
+        mail.send_notification(recipient["email"], subject, body)
+        sent_at = now.isoformat()
+        database.add_notification(conversation["id"], sender["id"], recipient_id, sent_at)
+    except Exception:
+        logging.exception("Email notification delivery failed for recipient %s", recipient_id)
+        return "failed"
+    return "sent"
+
+
+def _notify_recipients(database, user, conversation, recipient_ids, subject, details, now=None):
+    """Send a notice to eligible members and summarize any delivery blocks."""
+    if not mail.smtp_configured():
+        return NotificationResult(False, "Email notifications are not set up.")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    statuses = [_send_notification(database, user, conversation, recipient_id,
+                                    subject, details, current) for recipient_id in recipient_ids]
+    sent_count = statuses.count("sent")
+    if sent_count:
+        message = f"Notification sent to {sent_count} {('person' if sent_count == 1 else 'people')}."
+        if "disabled" in statuses:
+            message += " Some recipients have turned off email notifications."
+        if any(status.startswith("cooldown:") for status in statuses):
+            remaining = min(int(status.split(":")[1]) for status in statuses if status.startswith("cooldown:"))
+            unit = "minute" if remaining == 1 else "minutes"
+            message += f" Try again in {remaining} {unit} for other recipients."
+        if "failed" in statuses:
+            message += " Some emails could not be sent; please try again."
+        return NotificationResult(True, message, sent_count)
+    if "disabled" in statuses:
+        return NotificationResult(False, "The recipient has turned off email notifications.")
+    cooldowns = [int(status.split(":")[1]) for status in statuses if status.startswith("cooldown:")]
+    if cooldowns:
+        remaining = min(cooldowns)
+        unit = "minute" if remaining == 1 else "minutes"
+        return NotificationResult(False, f"{remaining} {unit} remaining before you can notify again.")
+    if "failed" in statuses:
+        return NotificationResult(False, "Email could not be sent. Please try again.")
+    if statuses and all(status == "missing" for status in statuses):
+        return NotificationResult(False, "The recipient could not be found.")
+    return NotificationResult(False, "No one is waiting for a response.")
+
+
+def notify_conversation(database, user, conversation_id, now=None):
+    """Notify the other member of a direct conversation without quoting messages."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to notify someone.")
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None or not database.is_conversation_member(conversation_id, user["id"]):
+        return NotificationResult(False, "You are not part of this conversation.")
+    if conversation["is_group"]:
+        return NotificationResult(False, "Use Notify bro on a meetup to notify the group.")
+    members = database.get_conversation_members(conversation_id)
+    recipients = [member["id"] for member in members if member["id"] != user["id"]]
+    details = "There is something new in your conversation."
+    conversation["title"] = "your direct conversation"
+    return _notify_recipients(database, user, conversation, recipients,
+                              "New activity in Bock'n Bros", details, now)
+
+
+def notify_event(database, user, event_id, now=None):
+    """Notify group members who have not responded to a meetup."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to notify the group.")
+    event = database.get_event(event_id)
+    if event is None or not database.is_conversation_member(event["conversation_id"], user["id"]):
+        return NotificationResult(False, "You are not a member of this meetup's group.")
+    conversation = database.get_conversation(event["conversation_id"])
+    if conversation is None or not conversation["is_group"]:
+        return NotificationResult(False, "Meetup notifications are only available in groups.")
+    conversation["title"] = get_conversation_title_for_user(database, user, conversation["id"]) or "your group"
+    responded = {row["user_id"] for row in database.get_event_responses(event_id)}
+    recipients = [member["id"] for member in database.get_conversation_members(conversation["id"])
+                 if member["id"] != user["id"] and member["id"] not in responded]
+    details = (f"Meetup: {event['title']}\nPlace: {event['venue_name']}\n"
+               f"When: {format_event_time(event['starts_at'])}")
+    return _notify_recipients(database, user, conversation, recipients,
+                              f"Meetup reminder: {event['title']}", details, now)
+
+
+def get_conversation_title_for_user(database, user, conversation_id):
+    """Return a member's display title for a conversation."""
+    return next((item["title"] for item in list_conversations(database, user)
+                 if item["id"] == conversation_id), None)
+
+
+def set_email_notifications(database, user, enabled):
+    """Let a signed-in user change only their own notification preference."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to change notification settings.")
+    if not isinstance(enabled, bool):
+        return NotificationResult(False, "Choose whether email notifications are on or off.")
+    if database.set_email_notifications(user["id"], enabled) is None:
+        return NotificationResult(False, "Your profile could not be found.")
+    label = "on" if enabled else "off"
+    return NotificationResult(True, f"Email notifications turned {label}.")
+
+
+def get_email_notifications(database, user):
+    """Return the signed-in user's email notification preference."""
+    if not _is_logged_in(user):
+        return None
+    return database.get_email_notifications(user["id"])
+
+
+def search_app_people(user, text):
+    """Find other users through the configured database."""
+    return search_people(db, user, text)
+
+
+def start_app_direct_conversation(user, other_user_id):
+    """Open a direct conversation through the configured database."""
+    return start_direct_conversation(db, user, other_user_id)
+
+
+def send_app_message(user, conversation_id, text):
+    """Send a message through the configured database."""
+    return send_message(db, user, conversation_id, text)
+
+
+def get_app_conversation_messages(user, conversation_id):
+    """Read a conversation through the configured database."""
+    return get_conversation_messages(db, user, conversation_id)
+
+
+def notify_app_conversation(user, conversation_id):
+    """Send a new-activity email for a direct conversation."""
+    return notify_conversation(db, user, conversation_id)
+
+
+def notify_app_event(user, event_id):
+    """Send a meetup notification to group members still awaiting a response."""
+    return notify_event(db, user, event_id)
+
+
+def app_email_notifications_enabled(user):
+    """Read the signed-in user's email preference."""
+    return get_email_notifications(db, user)
+
+
+def set_app_email_notifications(user, enabled):
+    """Save the signed-in user's email preference."""
+    return set_email_notifications(db, user, enabled)
+
+
+def app_email_notifications_configured():
+    """Report whether SMTP settings are available for the notification buttons."""
+    return mail.smtp_configured()
+
+
+def list_app_conversations(user):
+    """List the user's conversations through the configured database."""
+    return list_conversations(db, user)
+
+
+def get_app_conversation_title(user, conversation_id):
+    """Return the display title of one of the user's conversations."""
+    for conversation in list_conversations(db, user):
+        if conversation["id"] == conversation_id:
+            return conversation["title"]
+    return None
+
+
+def get_app_conversation_details(user, conversation_id):
+    """Return one of the signed-in user's conversations."""
+    return next((item for item in list_conversations(db, user)
+                 if item["id"] == conversation_id), None)
+
+
+def get_app_group_candidates(user):
+    """List possible group members through the configured database."""
+    return list_group_candidates(db, user)
+
+
+def create_app_group(user, name, member_ids):
+    """Create a group through the configured database."""
+    return create_group_conversation(db, user, name, member_ids)
+
+
+def add_app_group_member(user, conversation_id, member_id):
+    """Add a group member through the configured database."""
+    return add_group_member(db, user, conversation_id, member_id)
+
+
+def remove_app_group_member(user, conversation_id, member_id):
+    """Remove a group member through the configured database."""
+    return remove_group_member(db, user, conversation_id, member_id)
+
+
+def leave_app_group(user, conversation_id):
+    """Leave a group through the configured database."""
+    return leave_group(db, user, conversation_id)
+
+
+def rename_app_group(user, conversation_id, name):
+    """Rename a group through the configured database."""
+    return rename_group(db, user, conversation_id, name)
+
+
+def get_app_conversation_events(user, conversation_id, now=None):
+    """Read a group's meetups through the configured database."""
+    return get_conversation_events(db, user, conversation_id, now=now)
+
+
+def create_app_event(user, conversation_id, venue_id, title, starts_at, max_attendees=None):
+    """Create a meetup through the configured database."""
+    return create_event(db, user, conversation_id, venue_id, title, starts_at, max_attendees)
+
+
+def respond_app_event(user, event_id, response):
+    """Save a meetup response through the configured database."""
+    return respond_to_event(db, user, event_id, response)
+
+
+def cancel_app_event(user, event_id):
+    """Cancel a meetup through the configured database."""
+    return cancel_event(db, user, event_id)
+
+
+def follow_user(database, user, other_user_id, now=None):
+    """Follow another user; following twice changes nothing."""
+    if not _is_logged_in(user):
+        return FollowResult(False, "Log in to follow people.")
+    if other_user_id == user["id"]:
+        return FollowResult(False, "You cannot follow yourself.")
+    other = database.get_user_by_id(other_user_id)
+    if other is None:
+        return FollowResult(False, "That user could not be found.")
+    database.add_follow(user["id"], other_user_id, now=now)
+    return FollowResult(True, f"You follow {other['username']}.")
+
+
+def unfollow_user(database, user, other_user_id):
+    """Stop following a user; unfollowing someone you do not follow changes nothing."""
+    if not _is_logged_in(user):
+        return FollowResult(False, "Log in to follow people.")
+    database.remove_follow(user["id"], other_user_id)
+    return FollowResult(True, "Unfollowed.")
+
+
+def follow_venue(database, user, venue_id, now=None):
+    """Follow a bar or café; following twice changes nothing."""
+    if not _is_logged_in(user):
+        return FollowResult(False, "Log in to follow bars.")
+    venue = database.get_venue_by_id(venue_id)
+    if venue is None:
+        return FollowResult(False, "That venue could not be found.")
+    database.add_venue_follow(user["id"], venue_id, now=now)
+    return FollowResult(True, f"You follow {venue['name']}.")
+
+
+def unfollow_venue(database, user, venue_id):
+    """Stop following a venue."""
+    if not _is_logged_in(user):
+        return FollowResult(False, "Log in to follow bars.")
+    database.remove_venue_follow(user["id"], venue_id)
+    return FollowResult(True, "Unfollowed.")
+
+
+def get_profile(database, viewer, user_id):
+    """Return a public profile with friends, followers, following and bars, or None."""
+    person = database.get_user_by_id(user_id)
+    if person is None or not _is_logged_in(viewer):
+        return None
+    followers = database.get_followers(user_id)
+    following = database.get_following(user_id)
+    follower_ids = {item["id"] for item in followers}
+    return {
+        "id": person["id"],
+        "username": person["username"],
+        "role": person["role"],
+        "image_id": person["image_id"],
+        "is_me": person["id"] == viewer["id"],
+        "is_followed_by_me": database.is_following(viewer["id"], user_id),
+        "follows_me": database.is_following(user_id, viewer["id"]),
+        # Friends are people who follow each other.
+        "friends": [item for item in following if item["id"] in follower_ids],
+        "followers": followers,
+        "following": following,
+        "bars": database.get_followed_venues(user_id),
+    }
+
+
+def set_profile_picture(database, user, image_bytes, image_name, now=None):
+    """Validate and save a profile picture for the signed-in user."""
+    if not _is_logged_in(user):
+        return ProfilePictureResult(False, "Log in to change your profile picture.")
+    try:
+        image_id = database.set_profile_image(user["id"], image_bytes, image_name, now=now)
+    except (TypeError, ValueError) as error:
+        return ProfilePictureResult(False, str(error))
+    if image_id is None:
+        return ProfilePictureResult(False, "That user could not be found.")
+    return ProfilePictureResult(True, "Profile picture saved.")
+
+
+def remove_profile_picture(database, user):
+    """Remove the signed-in user's profile picture."""
+    if not _is_logged_in(user):
+        return ProfilePictureResult(False, "Log in to change your profile picture.")
+    if not database.remove_profile_image(user["id"]):
+        return ProfilePictureResult(False, "That user could not be found.")
+    return ProfilePictureResult(True, "Profile picture removed.")
+
+
+def get_profile_avatar(database, person):
+    """Return a user's image data or their initial for a fallback avatar."""
+    image = database.get_image(person.get("image_id")) if person.get("image_id") else None
+    if image:
+        return {"bytes": image["bytes"], "mime_type": image["mime_type"], "initial": None}
+    username = person.get("username", "?").strip()
+    return {"bytes": None, "mime_type": None, "initial": username[:1].upper() or "?"}
+
+
+def get_venue_follow_status(database, user, venue_id):
+    """Return whether the user follows a venue and how many followers it has."""
+    following = _is_logged_in(user) and database.is_following_venue(user["id"], venue_id)
+    return {"is_following": following, "followers": database.count_venue_followers(venue_id)}
+
+
+def follow_app_user(user, other_user_id):
+    """Follow a user through the configured database."""
+    return follow_user(db, user, other_user_id)
+
+
+def unfollow_app_user(user, other_user_id):
+    """Unfollow a user through the configured database."""
+    return unfollow_user(db, user, other_user_id)
+
+
+def follow_app_venue(user, venue_id):
+    """Follow a venue through the configured database."""
+    return follow_venue(db, user, venue_id)
+
+
+def unfollow_app_venue(user, venue_id):
+    """Unfollow a venue through the configured database."""
+    return unfollow_venue(db, user, venue_id)
+
+
+def get_app_profile(viewer, user_id):
+    """Read a profile through the configured database."""
+    return get_profile(db, viewer, user_id)
+
+
+def get_app_profile_avatar(person):
+    """Read a profile image through the configured database."""
+    return get_profile_avatar(db, person)
+
+
+def set_app_profile_picture(user, image_bytes, image_name):
+    """Save a profile image through the configured database."""
+    return set_profile_picture(db, user, image_bytes, image_name)
+
+
+def remove_app_profile_picture(user):
+    """Remove a profile image through the configured database."""
+    return remove_profile_picture(db, user)
+
+
+def get_app_venue_follow_status(user, venue_id):
+    """Read a venue's follow status through the configured database."""
+    return get_venue_follow_status(db, user, venue_id)
+
+
+def create_post(database, user, venue_id, text, image_bytes=None, image_name=None, now=None):
+    """Check permission and input, then save a post tied to a venue."""
+    if not _is_logged_in(user):
+        return PostResult(False, "Log in to post.")
+    if venue_id is None or database.get_venue_by_id(venue_id) is None:
+        return PostResult(False, "Choose the bar or café this post is about.")
+    if text is not None and not isinstance(text, str):
+        return PostResult(False, "Post text must be text.")
+    text = (text or "").strip()
+    if len(text) > MAX_POST_LENGTH:
+        return PostResult(False, f"Posts can be at most {MAX_POST_LENGTH} characters.")
+    if not text and not image_bytes:
+        return PostResult(False, "Add some text or a photo.")
+    try:
+        post_id = database.create_post(user["id"], venue_id, text or None,
+                                       image_bytes or None, image_name, now=now)
+    except ValueError as error:
+        return PostResult(False, str(error))
+    return PostResult(True, "Posted!", post_id)
+
+
+def get_feed(database, user):
+    """Return the user's feed: own posts, people they follow and bars they follow."""
+    if not _is_logged_in(user):
+        return []
+    return _add_like_details(database, database.get_feed_posts(user["id"]), user)
+
+
+def _add_like_details(database, posts, user):
+    """Attach each post's like count and the viewer's state."""
+    likes = database.get_likes_for_posts(post["id"] for post in posts)
+    counts = {}
+    liked_ids = set()
+    for like in likes:
+        counts[like["post_id"]] = counts.get(like["post_id"], 0) + 1
+        if like["user_id"] == user["id"]:
+            liked_ids.add(like["post_id"])
+    for post in posts:
+        post["like_count"] = counts.get(post["id"], 0)
+        post["liked_by_me"] = post["id"] in liked_ids
+    return posts
+
+
+def get_venue_posts(database, venue_id, user=None):
+    """Return all posts about a venue."""
+    posts = database.get_venue_posts(venue_id)
+    return _add_like_details(database, posts, user) if _is_logged_in(user) else posts
+
+
+def get_venue_community_photos(database, venue_id):
+    """Return up to twelve photo posts for a venue, newest first."""
+    return database.get_venue_photo_posts(venue_id, limit=12)
+
+
+def get_post_for_viewer(database, post_id, viewer):
+    """Return one post with the viewer's like state for the feed screen."""
+    posts = database.get_post_details(post_id)
+    if not posts:
+        return None
+    return _add_like_details(database, posts, viewer)[0] if _is_logged_in(viewer) else posts[0]
+
+
+def get_user_posts(database, user_id, viewer=None):
+    """Return all posts written by a user."""
+    posts = database.get_user_posts(user_id)
+    return _add_like_details(database, posts, viewer) if _is_logged_in(viewer) else posts
+
+
+def add_comment(database, user, post_id, text, now=None):
+    """Validate a comment and save it for a post."""
+    if not _is_logged_in(user):
+        return CommentResult(False, "Log in to comment.")
+    if database.get_post_by_id(post_id) is None:
+        return CommentResult(False, "That post could not be found.")
+    if not isinstance(text, str):
+        return CommentResult(False, "Comment must be text.")
+    text = text.strip()
+    if not text:
+        return CommentResult(False, "Write a comment first.")
+    if len(text) > 500:
+        return CommentResult(False, "Comments can be at most 500 characters.")
+    comment_id = database.add_comment(post_id, user["id"], text, now=now)
+    return CommentResult(True, "Comment added.", comment_id)
+
+
+def get_comments(database, post_id):
+    """Return a post's comments with their public author details."""
+    return database.get_comments_for_post(post_id)
+
+
+def delete_comment(database, user, comment_id):
+    """Delete a comment only when the signed-in user wrote it."""
+    if not _is_logged_in(user):
+        return CommentResult(False, "Log in to delete a comment.")
+    comment = database.get_comment(comment_id)
+    if comment is None:
+        return CommentResult(False, "That comment could not be found.")
+    if comment["user_id"] != user["id"]:
+        return CommentResult(False, "You can only delete your own comments.")
+    database.delete_comment(comment_id)
+    return CommentResult(True, "Comment deleted.", comment_id)
+
+
+def toggle_like(database, user, post_id, now=None):
+    """Add or remove the signed-in user's like on a post."""
+    if not _is_logged_in(user):
+        return LikeResult(False, "Log in to like posts.")
+    if database.get_post_by_id(post_id) is None:
+        return LikeResult(False, "That post could not be found.")
+    if database.is_liking(post_id, user["id"]):
+        database.remove_like(post_id, user["id"])
+        return LikeResult(True, "Like removed.", False)
+    database.add_like(post_id, user["id"], now=now)
+    return LikeResult(True, "Post liked.", True)
+
+
+def format_post_time(timestamp):
+    """Format a stored UTC timestamp as Lisbon time, e.g. '18 Nov 2026, 21:30'."""
+    moment = datetime.fromisoformat(timestamp)
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(LISBON)
+    return f"{moment.day} {moment.strftime('%b %Y, %H:%M')}"
+
+
+def create_app_post(user, venue_id, text, image_bytes=None, image_name=None):
+    """Create a post through the configured database."""
+    return create_post(db, user, venue_id, text, image_bytes, image_name)
+
+
+def get_app_feed(user):
+    """Read the feed through the configured database."""
+    return get_feed(db, user)
+
+
+def get_app_venue_posts(venue_id, user=None):
+    """Read a venue's posts through the configured database."""
+    return get_venue_posts(db, venue_id, user)
+
+
+def get_app_venue_community_photos(venue_id):
+    """Read venue photo metadata through the configured database."""
+    return get_venue_community_photos(db, venue_id)
+
+
+def get_app_post_for_viewer(post_id, viewer):
+    """Read one post for the feed screen."""
+    return get_post_for_viewer(db, post_id, viewer)
+
+
+def get_app_user_posts(user_id, viewer=None):
+    """Read a user's posts through the configured database."""
+    return get_user_posts(db, user_id, viewer)
+
+
+def get_app_post_image(post):
+    """Return one post's image bytes from the database, or None."""
+    if not post.get("image_id"):
+        return None
+    image = db.get_image_file(post["image_id"])
+    return image["bytes"] if image else None
+
+
+def add_app_comment(user, post_id, text):
+    """Add a comment through the configured database."""
+    return add_comment(db, user, post_id, text)
+
+
+def get_app_comments(post_id):
+    """Read comments through the configured database."""
+    return get_comments(db, post_id)
+
+
+def delete_app_comment(user, comment_id):
+    """Delete a comment through the configured database."""
+    return delete_comment(db, user, comment_id)
+
+
+def toggle_app_like(user, post_id):
+    """Toggle a post like through the configured database."""
+    return toggle_like(db, user, post_id)

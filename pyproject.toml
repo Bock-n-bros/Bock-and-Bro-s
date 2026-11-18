@@ -3,7 +3,11 @@ name = "bock-and-bros"
 version = "0.1.0"
 description = "A Lisbon bars and cafes meetup app"
 requires-python = ">=3.10"
-dependencies = ["streamlit", "bcrypt"]
+dependencies = [
+    "streamlit",
+    "bcrypt",
+    "pydeck",
+]
 
 [dependency-groups]
 dev = ["pytest"]

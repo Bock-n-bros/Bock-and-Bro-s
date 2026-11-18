@@ -15,6 +15,38 @@ VENUE_FIELDS = (
     "latitude", "longitude", "description",
 )
 
+MAP_STYLES = {
+    "Light": "mapbox://styles/mapbox/light-v11",
+    "Streets": "mapbox://styles/mapbox/streets-v12",
+    "Dark": "mapbox://styles/mapbox/dark-v11",
+    "Satellite": "mapbox://styles/mapbox/satellite-streets-v12",
+}
+
+
+def marker_color(avg_rating):
+    """Return an RGB marker color for a venue's average rating."""
+    if avg_rating is None:
+        return [128, 128, 128]
+    if avg_rating >= 4:
+        return [46, 160, 67]
+    if avg_rating >= 3:
+        return [245, 166, 35]
+    return [220, 53, 69]
+
+
+def map_style_url(name):
+    """Return the Mapbox style URL for a named map style."""
+    return MAP_STYLES.get(name, MAP_STYLES["Light"])
+
+
+def price_label(price, avg_rating=None):
+    """Show a price when available, otherwise the rating or a no-review label."""
+    if price is not None:
+        return f"€{price:.2f}"
+    if avg_rating is not None:
+        return f"{avg_rating:.1f} ★"
+    return "no reviews"
+
 
 @dataclass
 class AuthResult:
@@ -216,15 +248,22 @@ def validate_venues_csv(csv_path):
 
 
 def load_venues(database, csv_path):
-    """Load valid venues into an empty database and report skipped rows."""
-    if database.count_venues() > 0:
-        return 0
+    """Add valid CSV venues missing from the database and report invalid rows."""
     venues, errors = validate_venues_csv(csv_path)
     for error in errors:
         print(f"Venue loading: {error}")
+    existing_names = {
+        venue["name"].strip().casefold() for venue in database.get_all_venues()
+    }
+    loaded = 0
     for item in venues:
+        name_key = item["name"].casefold()
+        if name_key in existing_names:
+            continue
         database.insert_venue(item)
-    return len(venues)
+        existing_names.add(name_key)
+        loaded += 1
+    return loaded
 
 
 def find_venues(database, neighbourhood="All", venue_type="All", shows_football=False, search="", sort_by="name"):

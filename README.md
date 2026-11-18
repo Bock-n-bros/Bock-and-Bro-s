@@ -17,8 +17,15 @@ test suite with `uv run pytest`.
 ## Database setup
 
 By default, the app uses a local SQLite database. To use Supabase Postgres, copy
-`.streamlit/secrets.example.toml` to `.streamlit/secrets.toml` and replace the
+`.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and replace the
 placeholder `DATABASE_URL` with the connection string from your Supabase project.
 On Streamlit Community Cloud, add the same `DATABASE_URL` line in the app's Secrets
 settings. Keep the real connection string private; the local secrets file is ignored
 by Git.
+
+## Google login setup
+
+Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and fill in the
+Google OAuth values from the team's Google Cloud project. The local secrets file must
+never be committed to Git. Delete the local `bocknbros.db` once after switching to
+Google login so the new users table can be created.

@@ -22,7 +22,7 @@ explain any part of the code.** Prefer simple, readable code over clever code.
 - **Streamlit** for the interface
 - **SQLite** for storage (planned later move to Postgres/Supabase — see "Database rules")
 - **pytest** for tests
-- **bcrypt** for password hashing
+- Google login through Streamlit's `st.login` (OpenID Connect)
 - GitHub for version control; work on feature branches, merge via pull request
 
 Do not add new libraries or external services without asking first and explaining why.
@@ -80,3 +80,10 @@ swap the database later.
 - Short functions with clear names and a one-line docstring.
 - Comments explain *why*, not *what*.
 - Code, comments and UI text in English.
+
+## Decision log
+- `docs/DECISIONS.md` records every code decision the team may be asked about in the code walkthrough.
+- At the end of every task, add one entry per decision made in that task, using the next free D-number and the format at the top of the file: What, Why, Instead of, Where. Keep each line to one or two short sentences.
+- If a change reverses an earlier decision, mark the old entry "Replaced by D-0xx". Never delete entries.
+- Skip trivial choices such as variable names or formatting.
+- Mention the new D-numbers in your final summary.

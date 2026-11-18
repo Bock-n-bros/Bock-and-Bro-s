@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import bcrypt
 import pytest
 
 import db
@@ -15,62 +14,66 @@ def user_db(tmp_path, monkeypatch):
     return db
 
 
-def register(database, **overrides):
-    """Register a valid default user with optional field overrides."""
+def complete_profile(database, **overrides):
+    """Complete a valid default profile with optional field overrides."""
     values = {
+        "google_sub": "test-sub-1",
+        "email": "test@example.com",
         "username": "BroUser",
-        "password": "password1",
-        "password_repeat": "password1",
         "role": "customer",
         "age_confirmed": True,
     }
     values.update(overrides)
-    return logic.register_user(database, **values)
+    return logic.complete_profile(database, **values)
 
 
 @pytest.mark.parametrize("role", ["customer", "business"])
-def test_register_valid_roles_succeeds(user_db, role):
-    result = register(user_db, role=role)
+def test_complete_profile_succeeds_for_allowed_roles(user_db, role):
+    result = complete_profile(user_db, role=role)
     assert result.success
-    assert user_db.get_user_by_username("BroUser")["role"] == role
+    assert result.user == {
+        "id": 1,
+        "username": "BroUser",
+        "role": role,
+    }
 
 
 @pytest.mark.parametrize("username", ["abc", "a" * 20])
-def test_register_accepts_username_length_boundaries(user_db, username):
-    assert register(user_db, username=username).success
-
-
-def test_register_accepts_eight_character_password(user_db):
-    assert register(user_db, password="abcde123", password_repeat="abcde123").success
+def test_complete_profile_accepts_username_length_boundaries(user_db, username):
+    assert complete_profile(user_db, username=username).success
 
 
 @pytest.mark.parametrize("username", ["ab", "a" * 21, "bad-name", "bad name"])
-def test_register_rejects_invalid_username(user_db, username):
-    result = register(user_db, username=username)
+def test_complete_profile_rejects_invalid_username(user_db, username):
+    result = complete_profile(user_db, username=username)
     assert not result.success
     assert user_db.get_user_by_username(username) is None
 
 
-def test_register_rejects_case_insensitive_duplicate(user_db):
-    assert register(user_db, username="Bro").success
-    assert not register(user_db, username="bro").success
+def test_complete_profile_rejects_case_insensitive_duplicate_username(user_db):
+    assert complete_profile(user_db, username="Bro").success
+    assert not complete_profile(user_db, google_sub="test-sub-2", username="bro").success
 
 
-@pytest.mark.parametrize("password", ["short1", "abcdefgh", "12345678"])
-def test_register_rejects_weak_passwords(user_db, password):
-    assert not register(user_db, password=password, password_repeat=password).success
+def test_complete_profile_rejects_invalid_role(user_db):
+    assert not complete_profile(user_db, role="admin").success
 
 
-def test_register_rejects_mismatched_passwords(user_db):
-    assert not register(user_db, password_repeat="different1").success
+def test_complete_profile_rejects_unconfirmed_age(user_db):
+    assert not complete_profile(user_db, age_confirmed=False).success
 
 
-def test_register_rejects_invalid_role(user_db):
-    assert not register(user_db, role="admin").success
+@pytest.mark.parametrize("google_sub", ["", None, 123])
+def test_complete_profile_rejects_invalid_google_subject(user_db, google_sub):
+    assert not complete_profile(user_db, google_sub=google_sub).success
+    assert user_db.list_users() == []
 
 
-def test_register_rejects_unconfirmed_age(user_db):
-    assert not register(user_db, age_confirmed=False).success
+def test_complete_profile_rejects_google_account_with_existing_profile(user_db):
+    assert complete_profile(user_db).success
+    result = complete_profile(user_db, username="AnotherUser")
+    assert not result.success
+    assert len(user_db.list_users()) == 1
 
 
 @pytest.mark.parametrize(
@@ -78,83 +81,102 @@ def test_register_rejects_unconfirmed_age(user_db):
     [
         {"username": "ab"},
         {"username": "bad-name"},
-        {"password": "weak", "password_repeat": "weak"},
-        {"password_repeat": "different1"},
         {"role": "admin"},
         {"age_confirmed": False},
+        {"google_sub": ""},
     ],
 )
-def test_rejected_registration_saves_nothing(user_db, overrides):
-    assert not register(user_db, **overrides).success
+def test_rejected_profile_saves_nothing(user_db, overrides):
+    assert not complete_profile(user_db, **overrides).success
     assert user_db.list_users() == []
 
 
-@pytest.mark.parametrize("role", ["customer", "business"])
-def test_login_succeeds_for_each_role(user_db, role):
-    assert register(user_db, role=role).success
-    result = logic.login_user(user_db, "BroUser", "password1")
-    assert result.success
-    assert set(result.user) >= {"id", "username", "role"}
-    assert result.user["id"] == user_db.get_user_by_username("BroUser")["id"]
-    assert result.user["role"] == role
+def test_create_user_stores_google_identity_and_profile_fields(user_db):
+    user_id = user_db.create_user(
+        "test-sub-1", "test@example.com", "BroUser", "customer"
+    )
+    user = user_db.get_user_by_google_sub("test-sub-1")
+    assert user["id"] == user_id
+    assert user["google_sub"] == "test-sub-1"
+    assert user["email"] == "test@example.com"
+    assert user["username"] == "BroUser"
+    assert user["username_key"] == "brouser"
+    assert user["role"] == "customer"
+    assert user["created_at"]
 
 
-def test_login_uses_same_generic_error_for_unknown_user_and_wrong_password(user_db):
-    assert register(user_db).success
-    wrong_password = logic.login_user(user_db, "BroUser", "incorrect1")
-    unknown_user = logic.login_user(user_db, "missing", "incorrect1")
-    assert wrong_password.message == "Wrong username or password."
-    assert unknown_user.message == wrong_password.message
+def test_get_user_by_google_sub_returns_none_for_unknown_subject(user_db):
+    assert user_db.get_user_by_google_sub("missing-sub") is None
 
 
-def test_failed_login_increments_attempt_count(user_db):
-    register(user_db)
-    logic.login_user(user_db, "BroUser", "wrongpass1")
-    assert user_db.get_user_by_username("BroUser")["failed_attempts"] == 1
+def test_get_user_by_username_is_case_insensitive(user_db):
+    user_db.create_user("test-sub-1", "test@example.com", "BroUser", "customer")
+    user = user_db.get_user_by_username("bRoUsEr")
+    assert user["google_sub"] == "test-sub-1"
 
 
-def test_fifth_failed_attempt_locks_account_for_fifteen_minutes(user_db):
-    register(user_db)
-    now = 1_800_000_000
-    for _ in range(5):
-        result = logic.login_user(user_db, "BroUser", "wrongpass1", now=now)
-    user = user_db.get_user_by_username("BroUser")
-    assert not result.success
-    assert user["failed_attempts"] == 5
-    assert user["locked_until"] == now + 15 * 60
+def test_list_users_does_not_include_email(user_db):
+    user_db.create_user("test-sub-1", "private@example.com", "BroUser", "customer")
+    listed = user_db.list_users()
+    assert listed == [{"id": 1, "username": "BroUser", "role": "customer"}]
+    assert "email" not in listed[0]
 
 
-def test_login_is_refused_during_lock_and_allowed_after_expiry(user_db):
-    register(user_db)
-    now = 1_800_000_000
-    for _ in range(5):
-        logic.login_user(user_db, "BroUser", "wrongpass1", now=now)
-    locked = logic.login_user(user_db, "BroUser", "password1", now=now + 14 * 60)
-    expired = logic.login_user(user_db, "BroUser", "password1", now=now + 15 * 60)
-    assert not locked.success
-    assert expired.success
+def test_database_rejects_duplicate_google_subject(user_db):
+    user_db.create_user("test-sub-1", "one@example.com", "BroUser", "customer")
+    with pytest.raises(Exception):
+        user_db.create_user("test-sub-1", "two@example.com", "OtherUser", "customer")
 
 
-def test_successful_login_resets_failed_attempts(user_db):
-    register(user_db)
-    for _ in range(3):
-        logic.login_user(user_db, "BroUser", "wrongpass1")
-    assert logic.login_user(user_db, "BroUser", "password1").success
-    assert user_db.get_user_by_username("BroUser")["failed_attempts"] == 0
+def test_database_rejects_duplicate_username_key(user_db):
+    user_db.create_user("test-sub-1", "one@example.com", "BroUser", "customer")
+    with pytest.raises(Exception):
+        user_db.create_user("test-sub-2", "two@example.com", "brouser", "customer")
 
 
-def test_password_is_stored_as_bcrypt_hash(user_db):
-    register(user_db)
-    stored = user_db.get_user_by_username("BroUser")["password_hash"]
-    assert stored != "password1"
-    assert bcrypt.checkpw(b"password1", stored.encode("utf-8"))
+def test_find_google_user_returns_required_dictionary_shape(user_db):
+    user_db.create_user("test-sub-1", "private@example.com", "BroUser", "customer")
+    assert logic.find_google_user(user_db, "test-sub-1") == {
+        "id": 1,
+        "username": "BroUser",
+        "role": "customer",
+    }
 
 
-def test_user_can_login_after_database_reopen(user_db, tmp_path, monkeypatch):
-    register(user_db)
+def test_find_google_user_returns_none_without_profile(user_db):
+    assert logic.find_google_user(user_db, "missing-sub") is None
+
+
+def test_profile_persists_after_database_reopen(user_db, tmp_path, monkeypatch):
+    assert complete_profile(user_db).success
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     db.init_db()
-    assert logic.login_user(db, "BroUser", "password1").success
+    assert logic.find_google_user(db, "test-sub-1") == {
+        "id": 1,
+        "username": "BroUser",
+        "role": "customer",
+    }
+
+
+def test_no_password_authentication_remains():
+    project = Path(__file__).resolve().parents[1]
+    source_files = ["app.py", "logic.py", "db.py", "seed.py", "pyproject.toml"]
+    source = "\n".join(
+        (project / filename).read_text(encoding="utf-8").lower()
+        for filename in source_files
+    )
+    forbidden = [
+        "bcrypt",
+        "password_hash",
+        "failed_attempts",
+        "locked_until",
+        "register_user",
+        "login_user",
+        "authenticate_user",
+        "create_account",
+        "has_valid_session_user",
+    ]
+    assert all(token not in source for token in forbidden)
 
 
 def test_only_db_py_uses_sqlite_token():

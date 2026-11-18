@@ -1,11 +1,10 @@
 """Validate account actions and apply authentication rules."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 import csv
 from pathlib import Path
 
-import bcrypt
 import db
 
 
@@ -33,45 +32,32 @@ class ReviewResult:
     message: str
 
 
-def register_user(database, username, password, password_repeat, role, age_confirmed):
-    """Validate and save a new account."""
+def find_google_user(database, google_sub):
+    """Return the public user dictionary for a Google subject."""
+    user = database.get_user_by_google_sub(google_sub)
+    if user is None:
+        return None
+    return {"id": user["id"], "username": user["username"], "role": user["role"]}
+
+
+def complete_profile(database, google_sub, email, username, role, age_confirmed):
+    """Validate and save a profile for a Google account."""
+    if not isinstance(google_sub, str) or not google_sub.strip():
+        return AuthResult(False, "Google account could not be identified.")
     if not isinstance(username, str) or not 3 <= len(username) <= 20:
         return AuthResult(False, "Username must be 3 to 20 characters.")
     if not username.isascii() or not all(char.isalnum() or char == "_" for char in username):
         return AuthResult(False, "Username may contain only letters, digits, and underscores.")
+    if database.get_user_by_google_sub(google_sub):
+        return AuthResult(False, "This Google account already has a profile.")
     if database.get_user_by_username(username):
         return AuthResult(False, "That username is already taken.")
-    if not isinstance(password, str) or len(password) < 8 or not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
-        return AuthResult(False, "Password must be at least 8 characters and include a letter and a digit.")
-    if password != password_repeat:
-        return AuthResult(False, "The passwords do not match.")
     if role not in {"customer", "business"}:
         return AuthResult(False, "Choose customer or business.")
     if not age_confirmed:
         return AuthResult(False, "Confirm that you are 18 or older.")
-    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-    database.create_user(username, password_hash, role)
-    return AuthResult(True, "Account created.")
-
-
-def login_user(database, username, password, now=None):
-    """Authenticate a user and apply the consecutive-failure lockout."""
-    current = _timestamp(now)
-    user = database.get_user_by_username(username) if isinstance(username, str) else None
-    if not user:
-        return AuthResult(False, "Wrong username or password.")
-    if user["locked_until"] is not None and current < user["locked_until"]:
-        return AuthResult(False, "Wrong username or password.")
-    valid = bcrypt.checkpw(password.encode("utf-8"), user["password_hash"].encode("utf-8"))
-    if not valid:
-        failures = user["failed_attempts"] + 1
-        locked_until = current + 15 * 60 if failures >= 5 else None
-        database.update_login_state(user["username"], failures, locked_until)
-        return AuthResult(False, "Wrong username or password.")
-    database.update_login_state(user["username"], 0, None)
-    return AuthResult(True, "Logged in.", {
-        "id": user["id"], "username": user["username"], "role": user["role"]
-    })
+    database.create_user(google_sub, email, username, role)
+    return AuthResult(True, "Profile saved.", find_google_user(database, google_sub))
 
 
 def initialize_app_data():
@@ -80,14 +66,14 @@ def initialize_app_data():
     return load_venues(db, Path(__file__).resolve().parent / "data" / "venues.csv")
 
 
-def authenticate_user(username, password, now=None):
-    """Authenticate through the application's configured database."""
-    return login_user(db, username, password, now=now)
+def find_app_google_user(google_sub):
+    """Find the logged-in user's public profile."""
+    return find_google_user(db, google_sub)
 
 
-def create_account(username, password, password_repeat, role, age_confirmed):
-    """Register an account through the application's configured database."""
-    return register_user(db, username, password, password_repeat, role, age_confirmed)
+def complete_app_profile(google_sub, email, username, role, age_confirmed):
+    """Complete a profile through the configured database."""
+    return complete_profile(db, google_sub, email, username, role, age_confirmed)
 
 
 def get_venue(venue_id):
@@ -127,12 +113,6 @@ def submit_app_review(user, venue_id, atmosphere, value, quality,
                          super_bock_price, comment, now=now)
 
 
-def has_valid_session_user(user):
-    """Check that a saved session has the identity fields used by screens."""
-    return (isinstance(user, dict) and user.get("role") in {"customer", "business"}
-            and user.get("id") is not None and user.get("username"))
-
-
 def format_review_date(review):
     """Format review creation or update time for display."""
     created = datetime.fromisoformat(review["created_at"])
@@ -140,15 +120,6 @@ def format_review_date(review):
     if updated > created:
         return f"Updated {updated.day} {updated.strftime('%b %Y')}"
     return f"{created.day} {created.strftime('%b %Y')}"
-
-
-def _timestamp(now):
-    """Convert the optional clock value to a UTC Unix timestamp."""
-    if now is None:
-        return int(datetime.now(timezone.utc).timestamp())
-    if isinstance(now, datetime):
-        return int(now.timestamp())
-    return int(now)
 
 
 def validate_venue(row):

@@ -135,9 +135,9 @@ def _table_statements(backend):
     identity = "INTEGER PRIMARY KEY AUTOINCREMENT" if backend == "sqlite" else "INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY"
     return [
         f"""CREATE TABLE IF NOT EXISTS users (
-            id {identity}, username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('customer', 'business')),
-            created_at TEXT NOT NULL, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_until INTEGER
+            id {identity}, google_sub TEXT NOT NULL UNIQUE, email TEXT NOT NULL,
+            username TEXT NOT NULL, username_key TEXT NOT NULL UNIQUE,
+            role TEXT NOT NULL CHECK (role IN ('customer', 'business')), created_at TEXT NOT NULL
         )""",
         f"""CREATE TABLE IF NOT EXISTS venues (
             id {identity}, name TEXT NOT NULL, neighbourhood TEXT NOT NULL, address TEXT NOT NULL,
@@ -272,36 +272,42 @@ def _iso_timestamp(now):
     return str(now)
 
 
-def create_user(username, password_hash, role):
-    """Save a user account and return its identifier."""
+def create_user(google_sub, email, username, role):
+    """Save a Google profile and return its identifier."""
     init_db()
     backend, _ = _backend()
     with _connect() as connection:
         return _insert(connection, backend,
-            "INSERT INTO users (username, username_key, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-            (username, username.casefold(), password_hash, role, _iso_timestamp(None)))
+            "INSERT INTO users (google_sub, email, username, username_key, role, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (google_sub, email, username, username.casefold(), role, _iso_timestamp(None)))
+
+
+def get_user_by_google_sub(google_sub):
+    """Find a profile by its stable Google subject identifier."""
+    init_db()
+    backend, _ = _backend()
+    columns = ("id", "google_sub", "email", "username", "username_key", "role", "created_at")
+    with _connect() as connection:
+        row = _execute(connection, backend,
+            "SELECT id, google_sub, email, username, username_key, role, created_at FROM users WHERE google_sub = ?",
+            (google_sub,)).fetchone()
+        return _row_dict(row, columns)
 
 
 def get_user_by_username(username):
     """Find a user without regard to username capitalization."""
     init_db()
     backend, _ = _backend()
-    columns = ("id", "username", "password_hash", "role", "created_at", "failed_attempts", "locked_until")
+    columns = ("id", "google_sub", "email", "username", "username_key", "role", "created_at")
     with _connect() as connection:
         row = _execute(connection, backend,
-            "SELECT id, username, password_hash, role, created_at, failed_attempts, locked_until FROM users WHERE username_key = ?", (username.casefold(),)).fetchone()
+            "SELECT id, google_sub, email, username, username_key, role, created_at FROM users WHERE username_key = ?",
+            (username.casefold(),)).fetchone()
         return _row_dict(row, columns)
 
 
-def update_login_state(username, failed_attempts, locked_until):
-    """Save the latest failed-login count and lock expiry."""
-    backend, _ = _backend()
-    with _connect() as connection:
-        _execute(connection, backend, "UPDATE users SET failed_attempts = ?, locked_until = ? WHERE username_key = ?", (failed_attempts, locked_until, username.casefold()))
-
-
 def list_users():
-    """Return users for test assertions without exposing account secrets."""
+    """Return users for test assertions without exposing email addresses."""
     init_db()
     backend, _ = _backend()
     columns = ("id", "username", "role")

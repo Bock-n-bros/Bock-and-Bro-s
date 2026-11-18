@@ -334,3 +334,19 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** text communicates the account type without relying on color and preserves email privacy.
 - **Instead of:** a color-only marker or searching account email.
 - **Where:** `app.py`, `db.py`, `logic.py` and `specs/05-follows-and-profiles.md`.
+
+### D-050 · Groups have a creator and a 20-member limit
+*18 Nov 2026 · group messaging*
+
+- **What:** group creators manage members and names; other members may leave. Unnamed groups use the first three member usernames as their title.
+- **Why:** groups need clear ownership and a readable fallback without requiring every creator to name the conversation.
+- **Instead of:** required names, unrestricted membership or allowing the creator to leave while retaining creator permissions.
+- **Where:** `logic.py`, `db.py`, `app.py` and `specs/08-messages.md`.
+
+### D-051 · Meetups belong to group conversations
+*18 Nov 2026 · Bock a Bro events*
+
+- **What:** group members create venue-linked meetups, update yes/no responses, and only the creator may cancel; capacity is checked before accepting a yes. Cancellation deletes the event and its responses.
+- **Why:** events stay within the group context and capacity feedback is clear; the current schema has no cancellation state to preserve.
+- **Instead of:** standalone events, immutable responses, silently rejecting full events or adding a cancelled-state column.
+- **Where:** `db.py`, `logic.py`, `app.py` and `specs/08-messages.md`.

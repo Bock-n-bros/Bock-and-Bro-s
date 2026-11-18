@@ -1,6 +1,7 @@
 """Render account screens and the logged-in venue browser."""
 
 import html
+from datetime import date, datetime, time
 
 import streamlit as st
 
@@ -78,14 +79,18 @@ def show_messages_page(user):
     """Show the conversation list, or one open conversation."""
     conversation_id = st.session_state.get("conversation_id")
     if conversation_id is not None:
-        title = logic.get_app_conversation_title(user, conversation_id)
-        if title is None:
+        conversation = logic.get_app_conversation_details(user, conversation_id)
+        if conversation is None:
             st.session_state.pop("conversation_id", None)
             st.rerun()
+        title = conversation["title"]
         if st.button("← All conversations"):
             st.session_state.pop("conversation_id", None)
             st.rerun()
         st.subheader(title)
+        if conversation["is_group"]:
+            show_group_controls(user, conversation)
+            show_group_events(user, conversation_id)
         show_conversation(user, conversation_id)
         text = st.chat_input("Write a message", max_chars=logic.MAX_MESSAGE_LENGTH)
         if text:
@@ -114,6 +119,18 @@ def show_messages_page(user):
                     st.rerun()
                 st.error(result.message)
 
+    with st.expander("New group"):
+        group_name = st.text_input("Group name (optional)", max_chars=logic.MAX_GROUP_NAME_LENGTH)
+        candidates = logic.get_app_group_candidates(user)
+        names_by_id = {person["id"]: person["username"] for person in candidates}
+        member_ids = st.multiselect("Members", list(names_by_id), format_func=names_by_id.get)
+        if st.button("Create group", key="create-group"):
+            result = logic.create_app_group(user, group_name, member_ids)
+            if result.success:
+                st.session_state.conversation_id = result.conversation_id
+                st.rerun()
+            st.error(result.message)
+
     conversations = logic.list_app_conversations(user)
     if not conversations:
         st.write("No conversations yet. Use New message to find someone.")
@@ -133,6 +150,113 @@ def show_messages_page(user):
         if button_col.button("Open", key=f"conversation-{conversation['id']}"):
             st.session_state.conversation_id = conversation["id"]
             st.rerun()
+
+
+def show_group_controls(user, conversation):
+    """Show creator management and member leave actions."""
+    creator = conversation["created_by"] == user["id"]
+    with st.expander("Group members and settings"):
+        if creator:
+            with st.form(f"rename-group-{conversation['id']}"):
+                name = st.text_input("Group name", value=conversation["name"] or "",
+                                     max_chars=logic.MAX_GROUP_NAME_LENGTH)
+                rename = st.form_submit_button("Save name")
+            if rename:
+                result = logic.rename_app_group(user, conversation["id"], name)
+                if result.success:
+                    st.rerun()
+                st.error(result.message)
+        st.caption("Members")
+        member_ids = {member["id"] for member in conversation["members"]}
+        for member in conversation["members"]:
+            member_col, action_col = st.columns([4, 1])
+            member_col.write(member["username"])
+            if creator and member["id"] != user["id"]:
+                if action_col.button("Remove", key=f"remove-group-{conversation['id']}-{member['id']}"):
+                    result = logic.remove_app_group_member(user, conversation["id"], member["id"])
+                    if result.success:
+                        st.rerun()
+                    st.error(result.message)
+        if creator:
+            candidates = [person for person in logic.get_app_group_candidates(user)
+                          if person["id"] not in member_ids]
+            names_by_id = {person["id"]: person["username"] for person in candidates}
+            selected = st.selectbox("Add member", [None, *names_by_id],
+                                    format_func=lambda person_id: names_by_id.get(person_id, "Choose a person"))
+            if st.button("Add member", key=f"add-group-{conversation['id']}") and selected is not None:
+                result = logic.add_app_group_member(user, conversation["id"], selected)
+                if result.success:
+                    st.rerun()
+                st.error(result.message)
+        elif st.button("Leave group", key=f"leave-group-{conversation['id']}"):
+            result = logic.leave_app_group(user, conversation["id"])
+            if result.success:
+                st.session_state.pop("conversation_id", None)
+                st.rerun()
+            st.error(result.message)
+
+
+def show_group_events(user, conversation_id):
+    """Show upcoming and previous meetups in a group conversation."""
+    event_lists = logic.get_app_conversation_events(user, conversation_id)
+    if event_lists is None or not event_lists["is_group"]:
+        return
+    with st.expander("Create Bock a Bro"):
+        venues = {venue["id"]: venue["name"] for venue in logic.get_venues()}
+        with st.form(f"create-event-{conversation_id}"):
+            venue_id = st.selectbox("Bar or café", list(venues), index=None,
+                                    format_func=venues.get, placeholder="Choose a venue")
+            title = st.text_input("Meetup title")
+            event_date = st.date_input("Date", value=date.today())
+            event_time = st.time_input("Time", value=time(20, 0))
+            has_limit = st.checkbox("Set a maximum number of attendees")
+            max_attendees = st.number_input("Maximum attendees", min_value=1, step=1) if has_limit else None
+            submitted = st.form_submit_button("Create meetup")
+        if submitted:
+            starts_at = datetime.combine(event_date, event_time).isoformat()
+            result = logic.create_app_event(user, conversation_id, venue_id, title, starts_at, max_attendees)
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+
+    if event_lists["upcoming"]:
+        st.subheader("Bock a Bro")
+        for event in event_lists["upcoming"]:
+            show_group_event(user, event)
+    if event_lists["past"]:
+        st.subheader("Tidligere")
+        for event in event_lists["past"]:
+            show_group_event(user, event)
+
+
+def show_group_event(user, event):
+    """Render one meetup, responses and creator-only cancellation."""
+    with st.container(border=True):
+        st.write(event["title"])
+        st.button(event["venue_name"], key=f"event-venue-{event['id']}",
+                  on_click=open_venue, args=(event["venue_id"],))
+        attendees = ", ".join(person["username"] for person in event["attendees"]) or "No one yet"
+        capacity = f"{event['going_count']} going"
+        if event["max_attendees"] is not None:
+            capacity += f" / {event['max_attendees']} places"
+        st.caption(f"{logic.format_event_time(event['starts_at'])} · {capacity}")
+        st.text(f"Going: {attendees}")
+        yes_col, no_col = st.columns(2)
+        if yes_col.button("Going", key=f"event-going-{event['id']}"):
+            result = logic.respond_app_event(user, event["id"], "going")
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+        if no_col.button("Not going", key=f"event-not-going-{event['id']}"):
+            result = logic.respond_app_event(user, event["id"], "not_going")
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+        if event["created_by"] == user["id"] and st.button("Cancel meetup", key=f"event-cancel-{event['id']}"):
+            result = logic.cancel_app_event(user, event["id"])
+            if result.success:
+                st.rerun()
+            st.error(result.message)
 
 
 def open_profile(profile_id, my_id):

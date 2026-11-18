@@ -192,6 +192,16 @@ def _table_statements(backend):
             id {identity}, conversation_id INTEGER NOT NULL REFERENCES conversations(id),
             user_id INTEGER NOT NULL REFERENCES users(id), text TEXT NOT NULL, created_at TEXT NOT NULL
         )""",
+        f"""CREATE TABLE IF NOT EXISTS events (
+            id {identity}, conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+            venue_id INTEGER NOT NULL REFERENCES venues(id), title TEXT NOT NULL, starts_at TEXT NOT NULL,
+            max_attendees INTEGER, created_by INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS event_responses (
+            event_id INTEGER NOT NULL REFERENCES events(id), user_id INTEGER NOT NULL REFERENCES users(id),
+            response TEXT NOT NULL CHECK (response IN ('going', 'not_going')), responded_at TEXT NOT NULL,
+            UNIQUE (event_id, user_id)
+        )""",
     ]
 
 
@@ -200,7 +210,7 @@ def init_db():
     backend, _ = _backend()
     with _connect() as connection:
         tables = ("images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
-                  "conversations", "conversation_members", "messages")
+                  "conversations", "conversation_members", "messages", "events", "event_responses")
         for statement, table in zip(_table_statements(backend), tables):
             _execute(connection, backend, statement)
             if backend == "postgres":
@@ -441,7 +451,7 @@ def get_messages(conversation_id, limit=100):
 
 def get_conversations_for_user(user_id):
     """Return a user's conversations and their latest message."""
-    cursor = _query("SELECT c.id, c.name, c.is_group, c.created_at, other.id AS other_user_id, "
+    cursor = _query("SELECT c.id, c.name, c.is_group, c.created_by, c.created_at, other.id AS other_user_id, "
         "other.username AS other_username, other.role AS other_role, other.image_id AS other_image_id, last.text AS last_message, "
         "last.user_id AS last_sender_id, last.created_at AS last_message_at FROM conversations c "
         "JOIN conversation_members me ON me.conversation_id = c.id AND me.user_id = ? "
@@ -450,6 +460,117 @@ def get_conversations_for_user(user_id):
         "SELECT id FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC, id DESC LIMIT 1)",
         (user_id, user_id))
     return _rows(cursor)
+
+
+def get_conversation(conversation_id):
+    """Fetch a conversation's public settings and creator."""
+    cursor = _query("SELECT id, name, is_group, created_by, created_at FROM conversations WHERE id = ?",
+                    (conversation_id,))
+    return _row_dict(cursor.fetchone(), ("id", "name", "is_group", "created_by", "created_at"))
+
+
+def get_conversation_members(conversation_id):
+    """Return conversation members in stable creation order."""
+    cursor = _query("SELECT u.id, u.username, u.role, cm.joined_at FROM conversation_members cm "
+        "JOIN users u ON u.id = cm.user_id WHERE cm.conversation_id = ? ORDER BY cm.joined_at, u.id",
+        (conversation_id,))
+    return _rows(cursor)
+
+
+def add_conversation_member(conversation_id, user_id, now=None):
+    """Add a member and return whether a new row was inserted."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        exists = _execute(connection, backend,
+            "SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?",
+            (conversation_id, user_id)).fetchone()
+        if exists is not None:
+            return False
+        _execute(connection, backend,
+            "INSERT INTO conversation_members (conversation_id, user_id, joined_at) VALUES (?, ?, ?)",
+            (conversation_id, user_id, _iso_timestamp(now)))
+        return True
+
+
+def remove_conversation_member(conversation_id, user_id):
+    """Remove a user from a conversation."""
+    _query("DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?",
+           (conversation_id, user_id))
+
+
+def rename_conversation(conversation_id, name):
+    """Save a group's display name."""
+    _query("UPDATE conversations SET name = ? WHERE id = ?", (name, conversation_id))
+
+
+def add_event(conversation_id, venue_id, title, starts_at, max_attendees, created_by, now=None):
+    """Save an event and return its id."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        return _insert(connection, backend,
+            "INSERT INTO events (conversation_id, venue_id, title, starts_at, max_attendees, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (conversation_id, venue_id, title, starts_at, max_attendees, created_by, _iso_timestamp(now)))
+
+
+def get_event(event_id):
+    """Fetch event details including its venue and creator names."""
+    cursor = _query("SELECT e.id, e.conversation_id, e.venue_id, v.name AS venue_name, e.title, e.starts_at, "
+        "e.max_attendees, e.created_by, u.username AS creator_username, e.created_at "
+        "FROM events e JOIN venues v ON v.id = e.venue_id JOIN users u ON u.id = e.created_by WHERE e.id = ?",
+        (event_id,))
+    return _row_dict(cursor.fetchone(), ("id", "conversation_id", "venue_id", "venue_name", "title", "starts_at",
+                                         "max_attendees", "created_by", "creator_username", "created_at"))
+
+
+def get_events_for_conversation(conversation_id):
+    """Fetch events in a conversation, ordered by start time."""
+    cursor = _query("SELECT e.id, e.conversation_id, e.venue_id, v.name AS venue_name, e.title, e.starts_at, "
+        "e.max_attendees, e.created_by, u.username AS creator_username, e.created_at "
+        "FROM events e JOIN venues v ON v.id = e.venue_id JOIN users u ON u.id = e.created_by "
+        "WHERE e.conversation_id = ? ORDER BY e.starts_at, e.id", (conversation_id,))
+    return _rows(cursor)
+
+
+def get_event_responses(event_id):
+    """Return event responses with the attendee usernames."""
+    cursor = _query("SELECT r.event_id, r.user_id, r.response, r.responded_at, u.username "
+        "FROM event_responses r JOIN users u ON u.id = r.user_id WHERE r.event_id = ? "
+        "ORDER BY r.responded_at, r.user_id", (event_id,))
+    return _rows(cursor)
+
+
+def get_event_response(event_id, user_id):
+    """Find a user's response to an event, if any."""
+    cursor = _query("SELECT response FROM event_responses WHERE event_id = ? AND user_id = ?",
+                    (event_id, user_id))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def save_event_response(event_id, user_id, response, now=None):
+    """Insert or change a user's response."""
+    backend, _ = _backend()
+    timestamp = _iso_timestamp(now)
+    with _connect() as connection:
+        exists = _execute(connection, backend,
+            "SELECT 1 FROM event_responses WHERE event_id = ? AND user_id = ?", (event_id, user_id)).fetchone()
+        if exists:
+            _execute(connection, backend,
+                "UPDATE event_responses SET response = ?, responded_at = ? WHERE event_id = ? AND user_id = ?",
+                (response, timestamp, event_id, user_id))
+        else:
+            _execute(connection, backend,
+                "INSERT INTO event_responses (event_id, user_id, response, responded_at) VALUES (?, ?, ?, ?)",
+                (event_id, user_id, response, timestamp))
+
+
+def delete_event(event_id):
+    """Delete event responses and the event in one transaction."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        _execute(connection, backend, "DELETE FROM event_responses WHERE event_id = ?", (event_id,))
+        _execute(connection, backend, "DELETE FROM events WHERE id = ?", (event_id,))
 
 
 def _escape_like(text):

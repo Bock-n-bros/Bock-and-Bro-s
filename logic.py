@@ -43,6 +43,15 @@ class MessageResult:
 
 
 @dataclass
+class EventResult:
+    """Describe the outcome of an event action."""
+
+    success: bool
+    message: str
+    event_id: int | None = None
+
+
+@dataclass
 class FollowResult:
     """Describe the outcome of a follow or unfollow action."""
 
@@ -88,6 +97,8 @@ class ProfilePictureResult:
 MAX_POST_LENGTH = 500
 IMAGE_TYPES = ["jpg", "jpeg", "png"]
 MAX_MESSAGE_LENGTH = 1000
+MAX_GROUP_NAME_LENGTH = 50
+MAX_GROUP_MEMBERS = 20
 LISBON = ZoneInfo("Europe/Lisbon")
 
 
@@ -349,6 +360,102 @@ def start_direct_conversation(database, user, other_user_id, now=None):
     return MessageResult(True, "Conversation started.", conversation_id)
 
 
+def create_group_conversation(database, user, name, member_ids, now=None):
+    """Create a named or unnamed group with the current user as its owner."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to create a group.")
+    if name is not None and not isinstance(name, str):
+        return MessageResult(False, "Group name must be text.")
+    name = name.strip() if name else None
+    name = name or None
+    if name and len(name) > MAX_GROUP_NAME_LENGTH:
+        return MessageResult(False, "Group names can be at most 50 characters.")
+    if not isinstance(member_ids, (list, tuple)):
+        return MessageResult(False, "Choose group members.")
+    if len(member_ids) < 2:
+        return MessageResult(False, "A group needs at least three members, including you.")
+    if len(member_ids) + 1 > MAX_GROUP_MEMBERS:
+        return MessageResult(False, "Groups can have at most 20 members.")
+    if user["id"] in member_ids or len(set(member_ids)) != len(member_ids):
+        return MessageResult(False, "Choose each other member once.")
+    if any(database.get_user_by_id(member_id) is None for member_id in member_ids):
+        return MessageResult(False, "A selected member could not be found.")
+    conversation_id = database.create_conversation(
+        user["id"], [user["id"], *member_ids], name=name, is_group=True, now=now
+    )
+    return MessageResult(True, "Group created.", conversation_id)
+
+
+def _owned_group(database, user, conversation_id):
+    """Return a group owned by the user, or None."""
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None or not conversation["is_group"] or conversation["created_by"] != user["id"]:
+        return None
+    return conversation
+
+
+def add_group_member(database, user, conversation_id, member_id, now=None):
+    """Let a group's creator add a member, respecting the member limit."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to manage this group.")
+    conversation = _owned_group(database, user, conversation_id)
+    if conversation is None:
+        return MessageResult(False, "Only the group creator can add members.")
+    if database.get_user_by_id(member_id) is None:
+        return MessageResult(False, "That user could not be found.")
+    if database.is_conversation_member(conversation_id, member_id):
+        return MessageResult(True, "That user is already a member.", conversation_id)
+    if len(database.get_conversation_members(conversation_id)) >= MAX_GROUP_MEMBERS:
+        return MessageResult(False, "Groups can have at most 20 members.")
+    database.add_conversation_member(conversation_id, member_id, now=now)
+    return MessageResult(True, "Member added.", conversation_id)
+
+
+def remove_group_member(database, user, conversation_id, member_id):
+    """Let a group's creator remove another member."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to manage this group.")
+    if _owned_group(database, user, conversation_id) is None:
+        return MessageResult(False, "Only the group creator can remove members.")
+    if member_id == user["id"]:
+        return MessageResult(False, "The group creator cannot remove themselves.")
+    if not database.is_conversation_member(conversation_id, member_id):
+        return MessageResult(False, "That user is not a group member.")
+    database.remove_conversation_member(conversation_id, member_id)
+    return MessageResult(True, "Member removed.", conversation_id)
+
+
+def leave_group(database, user, conversation_id):
+    """Let a non-creator member leave a group."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to leave this group.")
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None or not conversation["is_group"]:
+        return MessageResult(False, "That group could not be found.")
+    if conversation["created_by"] == user["id"]:
+        return MessageResult(False, "The group creator cannot leave the group.")
+    if not database.is_conversation_member(conversation_id, user["id"]):
+        return MessageResult(False, "You are not a member of this group.")
+    database.remove_conversation_member(conversation_id, user["id"])
+    return MessageResult(True, "You left the group.", conversation_id)
+
+
+def rename_group(database, user, conversation_id, name):
+    """Let the group creator change or clear its name."""
+    if not _is_logged_in(user):
+        return MessageResult(False, "Log in to manage this group.")
+    if _owned_group(database, user, conversation_id) is None:
+        return MessageResult(False, "Only the group creator can change the name.")
+    if name is not None and not isinstance(name, str):
+        return MessageResult(False, "Group name must be text.")
+    name = name.strip() if name else None
+    name = name or None
+    if name and len(name) > MAX_GROUP_NAME_LENGTH:
+        return MessageResult(False, "Group names can be at most 50 characters.")
+    database.rename_conversation(conversation_id, name)
+    return MessageResult(True, "Group name updated.", conversation_id)
+
+
 def send_message(database, user, conversation_id, text, now=None):
     """Check membership and text, then save the message."""
     if not _is_logged_in(user):
@@ -377,12 +484,27 @@ def list_conversations(database, user):
         return []
     conversations = database.get_conversations_for_user(user["id"])
     for conversation in conversations:
-        conversation["title"] = conversation["name"] or conversation["other_username"] or "Conversation"
+        conversation["members"] = (database.get_conversation_members(conversation["id"])
+                                   if conversation["is_group"] else [])
+        if conversation["name"]:
+            conversation["title"] = conversation["name"]
+        elif conversation["is_group"]:
+            members = conversation["members"]
+            conversation["title"] = ", ".join(member["username"] for member in members[:3])
+        else:
+            conversation["title"] = conversation["other_username"] or "Conversation"
     return sorted(
         conversations,
         key=lambda item: (item["last_message_at"] or item["created_at"], item["id"]),
         reverse=True,
     )
+
+
+def list_group_candidates(database, user):
+    """Return other public users who can be invited to a group."""
+    if not _is_logged_in(user):
+        return []
+    return [person for person in database.list_users() if person["id"] != user["id"]]
 
 
 def format_message_time(timestamp):
@@ -391,6 +513,113 @@ def format_message_time(timestamp):
     if moment.tzinfo is not None:
         moment = moment.astimezone(LISBON)
     return f"{moment.day} {moment.strftime('%b, %H:%M')}"
+
+
+def _event_datetime(value):
+    """Parse an ISO date and interpret a naive value as Lisbon local time."""
+    if isinstance(value, datetime):
+        moment = value
+    elif isinstance(value, str):
+        moment = datetime.fromisoformat(value)
+    else:
+        raise ValueError("Choose a valid date and time.")
+    return moment.replace(tzinfo=LISBON) if moment.tzinfo is None else moment
+
+
+def format_event_time(timestamp):
+    """Format an ISO event time for Lisbon readers."""
+    moment = _event_datetime(timestamp).astimezone(LISBON)
+    return f"{moment.day} {moment.strftime('%b %Y, %H:%M')}"
+
+
+def create_event(database, user, conversation_id, venue_id, title, starts_at,
+                 max_attendees=None, now=None):
+    """Validate group membership and save a venue meetup."""
+    if not _is_logged_in(user):
+        return EventResult(False, "Log in to create a meetup.")
+    conversation = database.get_conversation(conversation_id)
+    if (conversation is None or not conversation["is_group"]
+            or not database.is_conversation_member(conversation_id, user["id"])):
+        return EventResult(False, "Only group members can create meetups.")
+    if database.get_venue_by_id(venue_id) is None:
+        return EventResult(False, "Choose an existing bar or café.")
+    if not isinstance(title, str) or not title.strip():
+        return EventResult(False, "Enter a meetup title.")
+    if max_attendees is not None and (isinstance(max_attendees, bool)
+            or not isinstance(max_attendees, int) or max_attendees < 1):
+        return EventResult(False, "Maximum attendees must be a positive whole number.")
+    try:
+        start = _event_datetime(starts_at).isoformat()
+    except (TypeError, ValueError):
+        return EventResult(False, "Choose a valid date and time.")
+    event_id = database.add_event(conversation_id, venue_id, title.strip(), start,
+                                  max_attendees, user["id"], now=now)
+    return EventResult(True, "Meetup created.", event_id)
+
+
+def get_conversation_events(database, user, conversation_id, now=None):
+    """Return a group's upcoming and previous events for one member."""
+    if (not _is_logged_in(user)
+            or not database.is_conversation_member(conversation_id, user["id"])):
+        return None
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None:
+        return None
+    current = _event_datetime(now) if now is not None else datetime.now(LISBON)
+    result = {"is_group": bool(conversation["is_group"]), "upcoming": [], "past": []}
+    if not conversation["is_group"]:
+        return result
+    for event in database.get_events_for_conversation(conversation_id):
+        responses = database.get_event_responses(event["id"])
+        attendees = [row for row in responses if row["response"] == "going"]
+        event["attendees"] = attendees
+        event["going_count"] = len(attendees)
+        event["my_response"] = database.get_event_response(event["id"], user["id"])
+        event["is_past"] = _event_datetime(event["starts_at"]) < current
+        result["past" if event["is_past"] else "upcoming"].append(event)
+    result["past"].sort(key=lambda event: _event_datetime(event["starts_at"]), reverse=True)
+    result["upcoming"].sort(key=lambda event: _event_datetime(event["starts_at"]))
+    return result
+
+
+def respond_to_event(database, user, event_id, response, now=None):
+    """Save a member's yes/no response while enforcing the attendee cap."""
+    if not _is_logged_in(user):
+        return EventResult(False, "Log in to respond to this meetup.")
+    event = database.get_event(event_id)
+    if event is None or not database.is_conversation_member(event["conversation_id"], user["id"]):
+        return EventResult(False, "You are not a member of this meetup's group.")
+    if response not in {"going", "not_going"}:
+        return EventResult(False, "Choose going or not going.")
+    previous = database.get_event_response(event_id, user["id"])
+    if response == "going" and previous != "going" and event["max_attendees"] is not None:
+        going_count = sum(row["response"] == "going" for row in database.get_event_responses(event_id))
+        if going_count >= event["max_attendees"]:
+            return EventResult(False, "This meetup is full. There are no places left.")
+    database.save_event_response(event_id, user["id"], response, now=now)
+    return EventResult(True, "Your response was saved.", event_id)
+
+
+def get_event_attendees(database, user, event_id):
+    """Return the going members of an event, or no rows for an outsider."""
+    event = database.get_event(event_id)
+    if (not _is_logged_in(user) or event is None
+            or not database.is_conversation_member(event["conversation_id"], user["id"])):
+        return None
+    return [row for row in database.get_event_responses(event_id) if row["response"] == "going"]
+
+
+def cancel_event(database, user, event_id):
+    """Delete a meetup only when requested by its creator."""
+    if not _is_logged_in(user):
+        return EventResult(False, "Log in to cancel this meetup.")
+    event = database.get_event(event_id)
+    if event is None:
+        return EventResult(False, "That meetup could not be found.")
+    if event["created_by"] != user["id"]:
+        return EventResult(False, "Only the meetup creator can cancel it.")
+    database.delete_event(event_id)
+    return EventResult(True, "Meetup cancelled.", event_id)
 
 
 def search_app_people(user, text):
@@ -424,6 +653,62 @@ def get_app_conversation_title(user, conversation_id):
         if conversation["id"] == conversation_id:
             return conversation["title"]
     return None
+
+
+def get_app_conversation_details(user, conversation_id):
+    """Return one of the signed-in user's conversations."""
+    return next((item for item in list_conversations(db, user)
+                 if item["id"] == conversation_id), None)
+
+
+def get_app_group_candidates(user):
+    """List possible group members through the configured database."""
+    return list_group_candidates(db, user)
+
+
+def create_app_group(user, name, member_ids):
+    """Create a group through the configured database."""
+    return create_group_conversation(db, user, name, member_ids)
+
+
+def add_app_group_member(user, conversation_id, member_id):
+    """Add a group member through the configured database."""
+    return add_group_member(db, user, conversation_id, member_id)
+
+
+def remove_app_group_member(user, conversation_id, member_id):
+    """Remove a group member through the configured database."""
+    return remove_group_member(db, user, conversation_id, member_id)
+
+
+def leave_app_group(user, conversation_id):
+    """Leave a group through the configured database."""
+    return leave_group(db, user, conversation_id)
+
+
+def rename_app_group(user, conversation_id, name):
+    """Rename a group through the configured database."""
+    return rename_group(db, user, conversation_id, name)
+
+
+def get_app_conversation_events(user, conversation_id, now=None):
+    """Read a group's meetups through the configured database."""
+    return get_conversation_events(db, user, conversation_id, now=now)
+
+
+def create_app_event(user, conversation_id, venue_id, title, starts_at, max_attendees=None):
+    """Create a meetup through the configured database."""
+    return create_event(db, user, conversation_id, venue_id, title, starts_at, max_attendees)
+
+
+def respond_app_event(user, event_id, response):
+    """Save a meetup response through the configured database."""
+    return respond_to_event(db, user, event_id, response)
+
+
+def cancel_app_event(user, event_id):
+    """Cancel a meetup through the configured database."""
+    return cancel_event(db, user, event_id)
 
 
 def follow_user(database, user, other_user_id, now=None):

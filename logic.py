@@ -59,6 +59,24 @@ class PostResult:
     post_id: int | None = None
 
 
+@dataclass
+class CommentResult:
+    """Describe the outcome of adding or deleting a comment."""
+
+    success: bool
+    message: str
+    comment_id: int | None = None
+
+
+@dataclass
+class LikeResult:
+    """Describe the outcome of toggling a like."""
+
+    success: bool
+    message: str
+    liked: bool = False
+
+
 MAX_POST_LENGTH = 500
 IMAGE_TYPES = ["jpg", "jpeg", "png"]
 MAX_MESSAGE_LENGTH = 1000
@@ -524,7 +542,18 @@ def get_feed(database, user):
     """Return the user's feed: own posts, people they follow and bars they follow."""
     if not _is_logged_in(user):
         return []
-    return database.get_feed_posts(user["id"])
+    posts = database.get_feed_posts(user["id"])
+    likes = database.get_likes_for_posts(post["id"] for post in posts)
+    counts = {}
+    liked_ids = set()
+    for like in likes:
+        counts[like["post_id"]] = counts.get(like["post_id"], 0) + 1
+        if like["user_id"] == user["id"]:
+            liked_ids.add(like["post_id"])
+    for post in posts:
+        post["like_count"] = counts.get(post["id"], 0)
+        post["liked_by_me"] = post["id"] in liked_ids
+    return posts
 
 
 def get_venue_posts(database, venue_id):
@@ -535,6 +564,54 @@ def get_venue_posts(database, venue_id):
 def get_user_posts(database, user_id):
     """Return all posts written by a user."""
     return database.get_user_posts(user_id)
+
+
+def add_comment(database, user, post_id, text, now=None):
+    """Validate a comment and save it for a post."""
+    if not _is_logged_in(user):
+        return CommentResult(False, "Log in to comment.")
+    if database.get_post_by_id(post_id) is None:
+        return CommentResult(False, "That post could not be found.")
+    if not isinstance(text, str):
+        return CommentResult(False, "Comment must be text.")
+    text = text.strip()
+    if not text:
+        return CommentResult(False, "Write a comment first.")
+    if len(text) > 500:
+        return CommentResult(False, "Comments can be at most 500 characters.")
+    comment_id = database.add_comment(post_id, user["id"], text, now=now)
+    return CommentResult(True, "Comment added.", comment_id)
+
+
+def get_comments(database, post_id):
+    """Return a post's comments with their public author details."""
+    return database.get_comments_for_post(post_id)
+
+
+def delete_comment(database, user, comment_id):
+    """Delete a comment only when the signed-in user wrote it."""
+    if not _is_logged_in(user):
+        return CommentResult(False, "Log in to delete a comment.")
+    comment = database.get_comment(comment_id)
+    if comment is None:
+        return CommentResult(False, "That comment could not be found.")
+    if comment["user_id"] != user["id"]:
+        return CommentResult(False, "You can only delete your own comments.")
+    database.delete_comment(comment_id)
+    return CommentResult(True, "Comment deleted.", comment_id)
+
+
+def toggle_like(database, user, post_id, now=None):
+    """Add or remove the signed-in user's like on a post."""
+    if not _is_logged_in(user):
+        return LikeResult(False, "Log in to like posts.")
+    if database.get_post_by_id(post_id) is None:
+        return LikeResult(False, "That post could not be found.")
+    if database.is_liking(post_id, user["id"]):
+        database.remove_like(post_id, user["id"])
+        return LikeResult(True, "Like removed.", False)
+    database.add_like(post_id, user["id"], now=now)
+    return LikeResult(True, "Post liked.", True)
 
 
 def format_post_time(timestamp):
@@ -571,3 +648,23 @@ def get_app_post_image(post):
         return None
     image = db.get_image_file(post["image_id"])
     return image["bytes"] if image else None
+
+
+def add_app_comment(user, post_id, text):
+    """Add a comment through the configured database."""
+    return add_comment(db, user, post_id, text)
+
+
+def get_app_comments(post_id):
+    """Read comments through the configured database."""
+    return get_comments(db, post_id)
+
+
+def delete_app_comment(user, comment_id):
+    """Delete a comment through the configured database."""
+    return delete_comment(db, user, comment_id)
+
+
+def toggle_app_like(user, post_id):
+    """Toggle a post like through the configured database."""
+    return toggle_like(db, user, post_id)

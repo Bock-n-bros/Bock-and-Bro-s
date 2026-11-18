@@ -3,6 +3,7 @@
 from pathlib import Path
 import ast
 from io import BytesIO
+import subprocess
 
 import db
 from PIL import Image
@@ -61,8 +62,8 @@ def test_post_insert_uses_portable_helpers_with_simulated_postgres(monkeypatch):
 
 def test_postgres_tables_use_identity_ids():
     statements = db._table_statements("postgres")
-    assert len(statements) == 10
-    identity_tables = ("users", "venues", "reviews", "images", "posts", "conversations", "messages")
+    assert len(statements) == 12
+    identity_tables = ("users", "venues", "reviews", "images", "posts", "comments", "conversations", "messages")
     for table in identity_tables:
         sql = next(item for item in statements if f"CREATE TABLE IF NOT EXISTS {table} " in item)
         assert "GENERATED ALWAYS AS IDENTITY" in sql
@@ -88,7 +89,7 @@ def test_postgres_initialization_enables_rls_on_every_table(monkeypatch):
     db.init_db()
     enabled = [sql for sql in calls if sql.startswith("ALTER TABLE")]
     assert enabled == [f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" for table in (
-        "users", "venues", "reviews", "images", "posts", "follows", "venue_follows",
+        "users", "venues", "reviews", "images", "posts", "comments", "likes", "follows", "venue_follows",
         "conversations", "conversation_members", "messages")]
 
 
@@ -204,8 +205,12 @@ def test_driver_imports_are_limited_to_db_py():
     project = Path(__file__).resolve().parents[1]
     forbidden = ("sqlite" + "3", "psy" + "copg")
     offenders = []
-    for path in project.rglob("*.py"):
-        if path.name == "db.py" or any(part in {".venv", ".git", ".uv-cache"} for part in path.parts):
+    tracked_files = subprocess.check_output(
+        ["git", "ls-files", "--", "*.py"], cwd=project, text=True
+    ).splitlines()
+    for tracked_file in tracked_files:
+        path = project / tracked_file
+        if path.name == "db.py":
             continue
         content = path.read_text(encoding="utf-8").lower()
         if any(token in content for token in forbidden):

@@ -2,42 +2,43 @@
 
 ## Why
 
-Comments turn posts into conversations ("Save me a seat!", "Is the match on tonight?")
-and give bar owners a way to answer questions about their posts.
+Comments let users coordinate around a post and let bar owners answer questions.
 
 Needs spec 06 (posts).
 
 ## What
 
 ### 1. Database (`db.py`)
-- A `comments` table with: id, post_id (REFERENCES posts), user_id (REFERENCES users),
-  text, created_at.
-- Functions to: add a comment, fetch the comments for a post (oldest first, with the
-  author's username and role), and count comments per post.
+- A `comments` table with id, post_id (REFERENCES posts), user_id (REFERENCES users),
+  text and created_at. Creation time is supplied by the app.
+- Functions add a comment, fetch a post's comments oldest first with username and role,
+  count comments for a post, find a comment and delete a comment.
 
 ### 2. Rules (`logic.py`)
-- **Who can comment:** any logged-in user, on any existing post they can open
-  (all posts are public, see spec 05).
-- **Validation:** text is trimmed, not empty, at most 300 characters. The post must exist.
+- Any logged-in user, including a business user, may comment on an existing post.
+- Text is trimmed, must not be empty and may contain at most 500 characters.
+- A comment's author may delete it. Other users cannot.
 
 ### 3. Screens (`app.py`)
-- Each post (feed, venue page, profile) shows "💬 N comments". Clicking it shows the
-  comments under the post (`st.expander`) and a one-line comment box with a **Send**
-  button.
-- Comments show username, "Bar owner" label if any, the text as plain text, and the date.
+- Posts on the feed, venue pages and profiles show the comment count and an expander
+  with comments oldest first, a one-line comment field and a Send button.
+- Each comment shows its author's username, role, text and date. The author can delete
+  their own comment.
+- Comments are shown as plain text, not Markdown or HTML.
 
 ## Out of scope
 
-- Editing or deleting comments
-- Replies to comments (threads)
+- Editing comments
+- Replies to comments or threads
 - Likes on comments
 - Notifications
 
 ## Done when
 
-- [ ] Approved tests pass with `uv run pytest` (all earlier tests still pass).
-- [ ] A user can comment on another user's post and the comment count goes up.
-- [ ] Comments are shown oldest first.
-- [ ] An empty comment, a comment over 300 characters, or a comment on a post that does
-      not exist is refused and nothing is saved.
-- [ ] A comment such as `**bold** <b>hi</b>` is displayed exactly as typed.
+- [ ] Approved tests pass with `uv run pytest`; existing tests still pass.
+- [ ] A customer or business user can comment on an existing post.
+- [ ] Comments appear oldest first with username and role.
+- [ ] Empty text, 501 characters and comments on unknown posts are refused.
+- [ ] A user can delete their own comment, but another user cannot.
+- [ ] Text such as `**bold** <b>hi</b>` appears exactly as typed, as plain text.
+- [ ] No file other than `db.py` uses a database driver or contains SQL.

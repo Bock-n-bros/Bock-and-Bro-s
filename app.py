@@ -236,7 +236,7 @@ def show_people_page(user):
     show_person_list(user, people, "", "search")
 
 
-def show_post(user, post, key):
+def show_post(user, post, key, show_likes=False):
     """Show one post: author, bar, photo, text and time."""
     with st.container(border=True):
         author_col, venue_col = st.columns([1, 1])
@@ -253,6 +253,34 @@ def show_post(user, post, key):
         if post["text"]:
             st.text(post["text"])
         st.caption(logic.format_post_time(post["created_at"]))
+        if show_likes:
+            like_label = "Unlike" if post["liked_by_me"] else "Like"
+            if st.button(f"{like_label} · {post['like_count']}", key=f"{key}-like-{post['id']}"):
+                result = logic.toggle_app_like(user, post["id"])
+                if result.success:
+                    st.rerun()
+                st.error(result.message)
+        comments = logic.get_app_comments(post["id"])
+        with st.expander(f"💬 {len(comments)} comments"):
+            for comment in comments:
+                author_role = "Bar owner" if comment["role"] == "business" else "Customer"
+                st.caption(f"{comment['username']} · {author_role} · "
+                           f"{logic.format_message_time(comment['created_at'])}")
+                st.text(comment["text"])
+                if comment["user_id"] == user["id"]:
+                    if st.button("Delete", key=f"{key}-delete-comment-{comment['id']}"):
+                        result = logic.delete_app_comment(user, comment["id"])
+                        if result.success:
+                            st.rerun()
+                        st.error(result.message)
+            with st.form(f"{key}-comment-form-{post['id']}", clear_on_submit=True):
+                comment_text = st.text_input("Write a comment", max_chars=500)
+                submitted = st.form_submit_button("Send")
+            if submitted:
+                result = logic.add_app_comment(user, post["id"], comment_text)
+                if result.success:
+                    st.rerun()
+                st.error(result.message)
 
 
 def show_post_form(user, key, venue_id=None):
@@ -277,12 +305,12 @@ def show_post_form(user, key, venue_id=None):
             st.error(result.message)
 
 
-def show_post_list(user, posts, empty_text, key):
+def show_post_list(user, posts, empty_text, key, show_likes=False):
     """Show a list of posts, or a note when there are none."""
     if not posts:
         st.caption(empty_text)
     for post in posts:
-        show_post(user, post, key)
+        show_post(user, post, key, show_likes=show_likes)
 
 
 def show_feed_page(user):
@@ -291,7 +319,8 @@ def show_feed_page(user):
     with st.expander("New post", icon=":material/add_a_photo:"):
         show_post_form(user, "feed")
     show_post_list(user, logic.get_app_feed(user),
-                   "Your feed is empty. Follow people under People, or follow bars on their page.", "feed")
+                   "Your feed is empty. Follow people under People, or follow bars on their page.", "feed",
+                   show_likes=True)
 
 
 PAGES = ["Feed", "Venues", "People", "Messages", "My profile"]

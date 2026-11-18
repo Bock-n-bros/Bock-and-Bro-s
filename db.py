@@ -163,6 +163,14 @@ def _table_statements(backend):
             venue_id INTEGER NOT NULL REFERENCES venues(id), text TEXT, image_id INTEGER REFERENCES images(id),
             created_at TEXT NOT NULL
         )""",
+        f"""CREATE TABLE IF NOT EXISTS comments (
+            id {identity}, post_id INTEGER NOT NULL REFERENCES posts(id),
+            user_id INTEGER NOT NULL REFERENCES users(id), text TEXT NOT NULL, created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS likes (
+            post_id INTEGER NOT NULL REFERENCES posts(id), user_id INTEGER NOT NULL REFERENCES users(id),
+            created_at TEXT NOT NULL, UNIQUE (post_id, user_id)
+        )""",
         """CREATE TABLE IF NOT EXISTS follows (
             follower_id INTEGER NOT NULL REFERENCES users(id), followed_id INTEGER NOT NULL REFERENCES users(id),
             created_at TEXT NOT NULL, UNIQUE (follower_id, followed_id)
@@ -190,7 +198,7 @@ def init_db():
     """Create application tables and enable Postgres row-level security."""
     backend, _ = _backend()
     with _connect() as connection:
-        tables = ("users", "venues", "reviews", "images", "posts", "follows", "venue_follows",
+        tables = ("users", "venues", "reviews", "images", "posts", "comments", "likes", "follows", "venue_follows",
                   "conversations", "conversation_members", "messages")
         for statement, table in zip(_table_statements(backend), tables):
             _execute(connection, backend, statement)
@@ -607,3 +615,75 @@ def get_user_posts(user_id, limit=50):
 def count_posts():
     """Count saved posts."""
     return _query("SELECT COUNT(*) FROM posts").fetchone()[0]
+
+
+def get_post_by_id(post_id):
+    """Return a post id when the post exists."""
+    row = _query("SELECT id FROM posts WHERE id = ?", (post_id,)).fetchone()
+    return {"id": row[0]} if row else None
+
+
+def add_comment(post_id, user_id, text, now=None):
+    """Save a comment and return its identifier."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        return _insert(connection, backend,
+            "INSERT INTO comments (post_id, user_id, text, created_at) VALUES (?, ?, ?, ?)",
+            (post_id, user_id, text, _iso_timestamp(now)))
+
+
+def get_comments_for_post(post_id):
+    """Return comments oldest first with public author details."""
+    cursor = _query("SELECT c.id, c.post_id, c.user_id, u.username, u.role, c.text, c.created_at "
+        "FROM comments c JOIN users u ON u.id = c.user_id WHERE c.post_id = ? "
+        "ORDER BY c.created_at, c.id", (post_id,))
+    return _rows(cursor)
+
+
+def get_comment(comment_id):
+    """Find a comment by id for an ownership check."""
+    cursor = _query("SELECT id, post_id, user_id, text, created_at FROM comments WHERE id = ?", (comment_id,))
+    return _row_dict(cursor.fetchone(), ("id", "post_id", "user_id", "text", "created_at"))
+
+
+def delete_comment(comment_id):
+    """Delete a comment after logic has checked its author."""
+    _query("DELETE FROM comments WHERE id = ?", (comment_id,))
+
+
+def count_comments(post_id):
+    """Count comments on a post."""
+    return len(get_comments_for_post(post_id))
+
+
+def add_like(post_id, user_id, now=None):
+    """Insert one like; the unique constraint rejects duplicate pairs."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        _execute(connection, backend,
+            "INSERT INTO likes (post_id, user_id, created_at) VALUES (?, ?, ?)",
+            (post_id, user_id, _iso_timestamp(now)))
+
+
+def is_liking(post_id, user_id):
+    """Check whether a user has liked a post."""
+    return _query("SELECT 1 FROM likes WHERE post_id = ? AND user_id = ?", (post_id, user_id)).fetchone() is not None
+
+
+def remove_like(post_id, user_id):
+    """Remove a user's like from a post."""
+    _query("DELETE FROM likes WHERE post_id = ? AND user_id = ?", (post_id, user_id))
+
+
+def get_likes_for_posts(post_ids):
+    """Return like pairs for a set of posts without SQL aggregation."""
+    likes = []
+    for post_id in post_ids:
+        cursor = _query("SELECT post_id, user_id FROM likes WHERE post_id = ?", (post_id,))
+        likes.extend(_rows(cursor))
+    return likes
+
+
+def count_likes(post_id):
+    """Count a post's likes in Python using its like rows."""
+    return len(get_likes_for_posts([post_id]))

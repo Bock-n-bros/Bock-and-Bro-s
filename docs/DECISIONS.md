@@ -302,3 +302,19 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** database storage survives Streamlit restarts and one image is fetched only when displayed.
 - **Instead of:** files in `uploads/` or loading image bytes into every feed result.
 - **Where:** `db.py` `images`, `create_post`, `get_post_image` and post queries.
+
+### D-046 · Comments allow 500 characters and author-only deletion
+*18 Nov 2026 · spec 07 update*
+
+- **What:** comments are trimmed, limited to 500 characters, shown as plain text, and deletable only by their author; business users may also comment.
+- **Why:** the project uses the same 500-character ceiling as reviews and lets people correct their own posts without granting broad moderation powers.
+- **Instead of:** the earlier 300-character limit with no deletion; text formatting through Markdown or HTML.
+- **Where:** `logic.py`, `app.py`, `db.py`, and `specs/07-comments.md`.
+
+### D-047 · Likes toggle per user and post
+*18 Nov 2026 · spec 09*
+
+- **What:** a unique database constraint allows one like per user and post; the button toggles it, and Python calculates visible counts and the current user's state.
+- **Why:** the database protects integrity even when logic is bypassed, while aggregation stays simple and portable.
+- **Instead of:** duplicate likes, SQL `GROUP BY`, notifications or a list of likers.
+- **Where:** `db.py`, `logic.py`, `app.py`, and `specs/09-likes.md`.

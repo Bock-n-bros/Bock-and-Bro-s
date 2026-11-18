@@ -22,7 +22,7 @@ explain any part of the code.** Prefer simple, readable code over clever code.
 - **Streamlit** for the interface
 - **SQLite** for storage (planned later move to Postgres/Supabase — see "Database rules")
 - **pytest** for tests
-- **bcrypt** for password hashing
+- Google login through Streamlit's `st.login` (OpenID Connect)
 - GitHub for version control; work on feature branches, merge via pull request
 
 Do not add new libraries or external services without asking first and explaining why.

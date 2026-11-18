@@ -28,11 +28,6 @@ def test_app_does_not_import_or_call_db():
     )
 
 
-def test_old_session_without_user_id_is_invalid():
-    assert not logic.has_valid_session_user({"username": "Alice", "role": "customer"})
-    assert logic.has_valid_session_user({"id": 1, "username": "Alice", "role": "customer"})
-
-
 @pytest.mark.parametrize(
     ("created_at", "updated_at", "expected"),
     [
@@ -70,7 +65,9 @@ def make_venue(database, name="Demo Bar", **changes):
 
 def make_user(database, username, role="customer"):
     """Create and return a test user."""
-    return database.create_user(username, "not-a-real-password-hash", role)
+    return database.create_user(
+        f"test-sub-{username}", f"{username.lower()}@example.com", username, role
+    )
 
 
 def review(**changes):
@@ -207,6 +204,16 @@ def test_reviews_fetch_with_username_and_newest_first(review_db):
     review_db.save_review(venue_id, bob, review(), "2026-01-02T12:00:00+00:00")
     rows = review_db.get_reviews_for_venue(venue_id)
     assert [row["username"] for row in rows] == ["Bob", "Alice"]
+
+
+def test_reviews_for_venue_never_include_reviewer_email(review_db):
+    venue_id = make_venue(review_db)
+    user_id = make_user(review_db, "Alice")
+    submit(review_db, {"id": user_id, "username": "Alice", "role": "customer"}, venue_id)
+    rows = review_db.get_reviews_for_venue(venue_id)
+    assert rows[0]["username"] == "Alice"
+    assert "email" not in rows[0]
+    assert "alice@example.com" not in rows[0].values()
 
 
 def test_two_customers_have_independent_reviews(review_db):

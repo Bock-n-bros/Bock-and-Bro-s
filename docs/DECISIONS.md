@@ -102,3 +102,59 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** `main` always works while login is half-built. Login changes the users table and the top of `app.py`, which every feature uses, so merging it first means conflicts appear once, early.
 - **Instead of:** working directly on `main`, or merging login last, when every other branch would conflict with it.
 - **Where:** GitHub, branch `google-login`.
+
+### D-022 · The decision log is a rule in AGENTS.md
+*18 Nov 2026 · step 5*
+
+- **What:** AGENTS.md tells every Codex session to add an entry to `docs/DECISIONS.md` after each task.
+- **Why:** every member is asked about code they did not write. One log written as the work happens is easier to learn than reading all the code.
+- **Instead of:** writing the log from memory before the presentation, when the reasons are forgotten.
+- **Where:** `AGENTS.md`, section "Decision log".
+
+### D-023 · Rules are tested automatically; login screens are checked by hand
+*18 Nov 2026 · step 6*
+
+- **What:** pytest tests every rule in `logic.py` and `db.py` with fake Google ids. The screens (Google button, profile form, logout, missing-secrets message) are checked by hand against the spec's "Done when" list.
+- **Why:** a test cannot log in to Google. The rules are where mistakes would let the wrong person in, so they get the automatic tests.
+- **Instead of:** faking Google inside the tests, which adds complex code that tests our fake rather than our app.
+- **Where:** `tests/test_auth.py`, `tests/test_reviews.py`; manual list in `specs/04-google-login.md`.
+
+### D-024 · Only the Streamlit auth extra replaces bcrypt
+*18 Nov 2026 · step 6*
+
+- **What:** the project uses `streamlit[auth]` and removes `bcrypt`.
+- **Why:** Streamlit's OpenID Connect login supplies the approved Google login without a separate password library.
+- **Instead of:** adding a direct Authlib dependency or keeping password hashing in the app.
+- **Where:** `pyproject.toml` and `uv.lock`.
+
+### D-025 · The users schema follows the new profile shape without a migration
+*18 Nov 2026 · step 6*
+
+- **What:** `db.py` creates users with Google subject, email, username, username key, role, and creation time only.
+- **Why:** the spec explicitly asks the team to delete the local database once, so migration code would add work outside the feature.
+- **Instead of:** converting old password and lockout columns at startup.
+- **Where:** `db.py` users table and the setup note in `README.md`.
+
+### D-026 · App authentication stays behind logic wrappers
+*18 Nov 2026 · step 6*
+
+- **What:** `app.py` passes the Streamlit Google identity to logic wrappers, which call the database functions and return the stable public user dictionary.
+- **Why:** the existing screen/database boundary remains explainable and the email stays out of logged-in user data used by venue features.
+- **Instead of:** importing `db.py` directly in the Streamlit screen.
+- **Where:** `app.py` and `logic.py`.
+
+### D-027 · Missing auth settings show a setup warning
+*18 Nov 2026 · step 6*
+
+- **What:** the app checks the required `[auth]` keys and shows "Google login is not set up — see README" when they are unavailable.
+- **Why:** an unfinished local setup should be understandable instead of raising a configuration exception.
+- **Instead of:** letting `st.login()` fail with a raw Streamlit error.
+- **Where:** `app.py` and `.streamlit/secrets.toml.example`.
+
+### D-028 · Review rows expose usernames but not reviewer emails
+*18 Nov 2026 · step 6*
+
+- **What:** venue review results include the reviewer's username and omit their Google email.
+- **Why:** users need an identifiable display name, but email is private account data.
+- **Instead of:** selecting all user columns when joining reviews.
+- **Where:** `db.py` review query and `tests/test_reviews.py`.

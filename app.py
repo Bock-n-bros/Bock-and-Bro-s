@@ -117,11 +117,11 @@ def render_venue_weather(venue):
             )
 
 
-def render_venue_card(venue, user, compact=False):
+def render_venue_card(venue, user, compact=False, review_summary=None):
     """Render shared venue details, reviews, weather and relevant actions."""
     venue_id = venue["id"]
     reviews = logic.get_venue_reviews(venue_id)
-    summary = logic.get_venue_review_summary(venue_id)
+    summary = review_summary or logic.get_venue_review_summary(venue_id)
     cheapest_price = logic.cheapest_review_price(reviews)
 
     if compact:
@@ -256,27 +256,8 @@ def render_map(venues, user):
     except Exception:
         mapbox_token = None
 
-    map_rows = []
     summaries = logic.get_all_venue_review_summaries()
-    for venue in venues:
-        summary = summaries[venue["id"]]
-        if minimum_rating != "All":
-            threshold = float(minimum_rating[:-1])
-            if summary["overall"] is None or summary["overall"] < threshold:
-                continue
-        price = summary["lowest_super_bock_price"]
-        pin_label = logic.price_label(price, summary["overall"])
-        taste_label = f"{summary['quality']:.1f}" if summary["quality"] is not None else "no reviews"
-        vibe_label = f"{summary['atmosphere']:.1f}" if summary["atmosphere"] is not None else "no reviews"
-        map_rows.append({
-            "id": venue["id"], "name": venue["name"],
-            "neighbourhood": venue["neighbourhood"],
-            "latitude": venue["latitude"], "longitude": venue["longitude"],
-            "rating": summary["overall"],
-            "taste": taste_label, "vibe": vibe_label,
-            "price": price, "pin_label": pin_label,
-            "color": logic.marker_color(summary["overall"]),
-        })
+    map_rows = logic.build_map_rows(venues, summaries, minimum_rating)
 
     if mapbox_token:
         map_provider = "mapbox"
@@ -290,8 +271,8 @@ def render_map(venues, user):
 
     points = pdk.Layer(
         "ScatterplotLayer", data=map_rows, id="venue-pins", pickable=True,
-        get_position="[longitude, latitude]", get_fill_color="color",
-        get_line_color=[255, 255, 255], radius_units="pixels", get_radius=7,
+        get_position="[longitude, latitude]", get_fill_color="fill",
+        get_line_color="line", radius_units="pixels", get_radius=7,
         radius_min_pixels=5, radius_max_pixels=10,
         line_width_min_pixels=2, stroked=True, auto_highlight=True,
     )
@@ -322,7 +303,10 @@ def render_map(venues, user):
         selected = next((venue for venue in venues if venue["id"] == selected_id), None)
         if selected:
             with st.container(border=True):
-                render_venue_card(selected, user, compact=True)
+                render_venue_card(
+                    selected, user, compact=True,
+                    review_summary=summaries[selected_id],
+                )
 
 def google_auth_is_configured():
     """Return whether the required Streamlit auth settings are available."""

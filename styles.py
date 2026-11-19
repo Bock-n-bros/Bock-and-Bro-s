@@ -41,8 +41,8 @@ MAP_LAYOUT_CSS = """
     border-radius: 50%;
 }
 .map-legend-no-reviews {
-    background: transparent;
-    border: 2px solid #d9960f;
+    background: rgb(255,255,255);
+    border: 2px solid rgb(217,150,15);
 }
 .map-count {
     white-space: nowrap;
@@ -54,9 +54,9 @@ MAP_LAYOUT_CSS = """
 MAP_LEGEND_HTML = """
 <div class="map-legend-row">
   <div class="map-legend">
-    <span class="map-legend-item"><i class="map-legend-dot" style="background:#2ea043"></i>4+</span>
-    <span class="map-legend-item"><i class="map-legend-dot" style="background:#f5a623"></i>3–4</span>
-    <span class="map-legend-item"><i class="map-legend-dot" style="background:#dc3545"></i>Under 3</span>
+    <span class="map-legend-item"><i class="map-legend-dot" style="background:rgb(46,139,87)"></i>4+</span>
+    <span class="map-legend-item"><i class="map-legend-dot" style="background:rgb(217,150,15)"></i>3–4</span>
+    <span class="map-legend-item"><i class="map-legend-dot" style="background:rgb(196,52,44)"></i>Under 3</span>
     <span class="map-legend-item"><i class="map-legend-dot map-legend-no-reviews"></i>No reviews</span>
   </div>
   <span class="map-count">Showing {shown} of {total} bars</span>

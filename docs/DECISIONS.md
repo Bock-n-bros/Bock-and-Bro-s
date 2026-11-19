@@ -532,3 +532,17 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** the app keeps its familiar left-side navigation and the account controls remain grouped above the page list.
 - **Instead of:** top navigation and red styling on Streamlit's header.
 - **Where:** `app.py` navigation shell, `styles.py` and `tests/test_navigation.py`.
+
+### D-075 · Internal detail links use same-tab buttons
+
+- **What:** venue and profile names render as text-style buttons that set query and session state before switching pages; external map links remain links.
+- **Why:** internal navigation stays in the current browser tab while preserving detail URLs and Back behavior.
+- **Instead of:** HTML anchors or `st.link_button` for app pages.
+- **Where:** `app.detail_text_link`, `app.open_venue`, `app.open_profile` and `tests/test_navigation.py`.
+
+### D-076 · Detail IDs travel with Streamlit page switches
+
+- **What:** detail navigation passes its query parameters directly to `st.switch_page`.
+- **Why:** Streamlit page switches otherwise drop the venue or profile ID before the destination renders.
+- **Instead of:** relying on the browser URL alone to carry detail state across a page switch.
+- **Where:** `app.open_detail`, `app.go_back_from_detail`, `app.redirect_detail_to_owner` and `tests/test_navigation.py`.

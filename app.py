@@ -11,7 +11,6 @@ from urllib.parse import quote_plus
 import logic
 import styles
 import weather
-from urllib.parse import urlencode
 
 st.set_page_config(page_title="Bock'n Bros", page_icon="🍺")
 st.markdown(styles.THEME_CSS, unsafe_allow_html=True)
@@ -402,11 +401,12 @@ def show_conversation(user, conversation_id):
             params = logic.profile_link_params(
                 message["user_id"], st.session_state.get("active_page", "Messages")
             )
-            st.markdown(
-                f"{detail_text_link(label, '👤', params)} · "
-                f"{html.escape(logic.format_message_time(message['created_at']))}",
-                unsafe_allow_html=True,
+            author_col, time_col = st.columns([2, 3], vertical_alignment="center")
+            detail_text_link(
+                label, "👤", params, f"chat-message-{conversation_id}-{message['id']}",
+                target=author_col,
             )
+            time_col.caption(logic.format_message_time(message["created_at"]))
             st.text(message["text"])
 
 
@@ -446,9 +446,9 @@ def show_conversation_card(user, conversation, key):
             profile_query = logic.profile_link_params(
                 conversation["other_user_id"], "Messages"
             )
-            text_col.markdown(
-                detail_text_link(conversation["title"], "👤", profile_query),
-                unsafe_allow_html=True,
+            detail_text_link(
+                conversation["title"], "👤", profile_query,
+                f"conversation-title-{conversation['id']}", target=text_col,
             )
         else:
             text_col.markdown(plain_text_title(conversation["title"]),
@@ -520,9 +520,9 @@ def show_open_conversation(user, conversation_id):
         profile_query = logic.profile_link_params(
             conversation["other_user_id"], "Messages"
         )
-        title_col.markdown(
-            detail_text_link(conversation["title"], "👤", profile_query),
-            unsafe_allow_html=True,
+        detail_text_link(
+            conversation["title"], "👤", profile_query,
+            f"conversation-open-title-{conversation_id}", target=title_col,
         )
     else:
         title_col.markdown(plain_text_title(conversation["title"], size="1.5rem"),
@@ -695,22 +695,37 @@ def open_profile(profile_id, my_id):
 def open_detail(detail_type, item_id, destination, query=None):
     """Save the source page and open a detail URL on its owning page."""
     source = st.session_state.get("active_page", destination)
+    query_params = query or logic.build_detail_query(detail_type, item_id, source)
     history = st.session_state.setdefault("detail_history", [])
     history.append({"page": source, "query": dict(st.query_params)})
     st.session_state.came_from_page = source
     st.query_params.clear()
-    st.query_params.update(query or logic.build_detail_query(detail_type, item_id, source))
-    st.switch_page(NAV_PAGES[destination])
+    st.query_params.update(query_params)
+    st.switch_page(NAV_PAGES[destination], query_params=query_params)
 
 
-def detail_text_link(label, icon, query):
-    """Build an inline text link to a venue or profile detail URL."""
-    destination = "Venues" if "venue" in query else "People"
-    href = f"/{NAV_PAGES[destination].url_path}?{urlencode(query)}"
-    return (
-        f'<a class="detail-text-link" href="{html.escape(href, quote=True)}">'
-        f'<span class="detail-text-icon" aria-hidden="true">{icon}</span>'
-        f'{html.escape(str(label))}</a>'
+def open_venue_link(query):
+    """Open the venue named by a prebuilt shared-link query."""
+    open_detail("venue", int(query["venue"]), "Venues", query=query)
+
+
+def open_profile_link(query):
+    """Open the profile named by a prebuilt shared-link query."""
+    profile_id = int(query["user"])
+    destination = "Profile" if profile_id == user["id"] else "People"
+    open_detail("profile", profile_id, destination, query=query)
+
+
+def detail_text_link(label, icon, query, key, target=None):
+    """Render an inline button that opens the matching venue or profile detail."""
+    button_target = target if target is not None else st
+    if "venue" in query:
+        callback = open_venue_link
+    else:
+        callback = open_profile_link
+    button_target.button(
+        label, key=f"text-link-{key}", type="tertiary", icon=icon,
+        on_click=callback, args=(query,),
     )
 
 
@@ -733,9 +748,10 @@ def go_back_from_detail(default_page):
     if destination not in allowed:
         destination = logic.parse_return_page(st.query_params, allowed, default_page)
     clear_detail_url()
+    query_params = previous["query"] if previous else {}
     if previous:
-        st.query_params.update(previous["query"])
-    st.switch_page(ALL_NAV_PAGES[destination])
+        st.query_params.update(query_params)
+    st.switch_page(ALL_NAV_PAGES[destination], query_params=query_params)
 
 
 def show_detail_back(default_page):
@@ -1117,21 +1133,28 @@ def show_post(user, post, key):
         show_avatar({"username": post["username"], "image_id": post["author_image_id"]},
                     40, author_image_col)
         author_query = logic.profile_link_params(post["user_id"], "Feed")
-        author_html = detail_text_link(display_name(post), "👤", author_query)
         if post["venue_id"] is not None:
+            author_col, at_col, venue_col = header_col.columns([3, 0.45, 3])
+            detail_text_link(
+                display_name(post), "👤", author_query,
+                f"{key}-author-{post['id']}", target=author_col,
+            )
+            at_col.markdown("at")
             venue_query = logic.venue_link_params(post["venue_id"], "Feed")
-            venue_html = detail_text_link(post["venue_name"], "🍺", venue_query)
-            header_col.markdown(
-                f"{author_html}<span class=\"post-header-at\">at</span>{venue_html}",
-                unsafe_allow_html=True,
+            detail_text_link(
+                post["venue_name"], "🍺", venue_query,
+                f"{key}-venue-{post['id']}", target=venue_col,
             )
         else:
             # A typed-in "Other" location has no venue detail page.
             place = html.escape(post["location_name"] or "")
-            header_col.markdown(
-                f"{author_html}<span class=\"post-header-at\">at</span>"
-                f"<span>📍 {place}</span>", unsafe_allow_html=True,
+            author_col, at_col, place_col = header_col.columns([3, 0.45, 3])
+            detail_text_link(
+                display_name(post), "👤", author_query,
+                f"{key}-author-{post['id']}", target=author_col,
             )
+            at_col.markdown("at")
+            place_col.markdown(f"📍 {place}")
         header_col.caption(logic.format_post_time(post["created_at"]))
         show_post_photos(post, key)
         if post["text"]:
@@ -1152,11 +1175,13 @@ def show_post(user, post, key):
                 profile_query = logic.profile_link_params(
                     comment["user_id"], st.session_state.get("active_page", "Feed")
                 )
-                st.markdown(
-                    f"{detail_text_link(comment['username'], '👤', profile_query)} · "
-                    f"{html.escape(author_role)} · "
-                    f"{html.escape(logic.format_message_time(comment['created_at']))}",
-                    unsafe_allow_html=True,
+                author_col, details_col = st.columns([1, 4], vertical_alignment="center")
+                detail_text_link(
+                    comment["username"], "👤", profile_query,
+                    f"{key}-comment-author-{comment['id']}", target=author_col,
+                )
+                details_col.caption(
+                    f"{author_role} · {logic.format_message_time(comment['created_at'])}"
                 )
                 st.text(comment["text"])
                 if comment["user_id"] == user["id"]:
@@ -1367,7 +1392,9 @@ def redirect_detail_to_owner(active_page):
         if key == "user" and active_page == "Profile":
             continue
         if query_has(key) and destination != active_page:
-            st.switch_page(NAV_PAGES[destination])
+            st.switch_page(
+                NAV_PAGES[destination], query_params=dict(st.query_params)
+            )
 
 
 def render_not_found(default_page):

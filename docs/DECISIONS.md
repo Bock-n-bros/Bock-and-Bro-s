@@ -417,3 +417,11 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** one query per venue (two on the map) meant 40–60 network round trips per page on Supabase.
 - **Instead of:** calling `get_review_summary` and `get_reviews_for_venue` in a loop over venues.
 - **Where:** `db.get_all_review_summaries`, `logic.get_review_summaries`, `logic.sort_venues`, `app.py` map and venue list.
+
+### D-060 · Bock'n Bros theme: beer red, gold and cream
+*19 Nov 2026 · design*
+
+- **What:** colours and fonts (Oswald headings, Inter text) in `[theme]` in `.streamlit/config.toml`; a red top banner with our own beer illustration, gold heading underlines and cream cards in `styles.THEME_CSS`; logo, illustration and font files in `static/`.
+- **Why:** gives the app a recognisable Lisbon beer-bar look inspired by Super Bock colours, mostly through Streamlit's built-in theme so little custom CSS is needed.
+- **Instead of:** Super Bock's own logo or label, which is their trademark; the logo and bottles are our own drawings.
+- **Where:** `.streamlit/config.toml`, `styles.py`, `app.py` (top), `static/`.

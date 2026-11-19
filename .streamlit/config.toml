@@ -1,3 +1,35 @@
 [server]
 # Photos are limited to 5 MB (also checked in logic.py).
 maxUploadSize = 5
+# Serves static/ (fonts, logo, illustrations) at app/static/...
+enableStaticServing = true
+
+# Bock'n Bros theme: beer red, gold and cream (see docs/DECISIONS.md).
+[theme]
+base = "light"
+primaryColor = "#C8102E"
+backgroundColor = "#FBF3E4"
+secondaryBackgroundColor = "#F3E7D0"
+textColor = "#2B1D14"
+linkColor = "#C8102E"
+borderColor = "#E3C98F"
+baseRadius = "0.75rem"
+font = "Inter"
+headingFont = "Oswald"
+
+[[theme.fontFaces]]
+family = "Oswald"
+url = "app/static/oswald.ttf"
+weight = "200 700"
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "app/static/inter.ttf"
+weight = "100 900"
+
+[theme.sidebar]
+backgroundColor = "#F3E7D0"
+textColor = "#2B1D14"
+secondaryBackgroundColor = "#EADBBE"
+borderColor = "#E3C98F"
+primaryColor = "#C8102E"

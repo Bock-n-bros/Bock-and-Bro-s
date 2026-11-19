@@ -448,3 +448,17 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** people also meet at viewpoints, parks or private places that are not in the venue list.
 - **Instead of:** letting users add new venues, which would need moderation.
 - **Where:** `posts.location_name`, nullable `posts.venue_id`, `logic.create_post`, `app.show_post_form`, `app.show_post`. Existing databases are upgraded at startup (Postgres drops NOT NULL; local SQLite copies the posts table once). One test now only checks the row-level-security statements, since startup also runs this upgrade.
+
+### D-064 · Map pins and legend share rating colors
+
+- **What:** map rows carry rating-based fill and outline colors, with a white fill and amber outline for venues without reviews.
+- **Why:** pin colors match the legend, and the selected card reuses the map's review summary so both show the same average.
+- **Instead of:** separate color and rating calculations for the map and card.
+- **Where:** `logic.marker_color`, `app.render_map`, `styles.MAP_LEGEND_HTML` and `tests/test_map.py`.
+
+### D-065 · Map rows are built in testable logic code
+
+- **What:** `logic.build_map_rows` creates map data and reads fill and outline values from the marker color dictionary.
+- **Why:** a direct row-building test catches color-shape mismatches before the map renders.
+- **Instead of:** creating rows inline in the Streamlit screen, where the conversion is harder to test.
+- **Where:** `logic.py`, `app.render_map` and `tests/test_map.py`.

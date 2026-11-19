@@ -118,14 +118,41 @@ def closest_station(lat, lon, stations):
 
 
 def marker_color(avg_rating):
-    """Return an RGB marker color for a venue's average rating."""
+    """Return fill and outline RGB colors for a venue's average rating."""
     if avg_rating is None:
-        return [128, 128, 128]
+        return {"fill": [255, 255, 255], "line": [217, 150, 15]}
     if avg_rating >= 4:
-        return [46, 160, 67]
+        color = [46, 139, 87]
+        return {"fill": color, "line": color}
     if avg_rating >= 3:
-        return [245, 166, 35]
-    return [220, 53, 69]
+        color = [217, 150, 15]
+        return {"fill": color, "line": color}
+    color = [196, 52, 44]
+    return {"fill": color, "line": color}
+
+
+def build_map_rows(venues, summaries, minimum_rating="All"):
+    """Build map marker rows from venues and their shared review summaries."""
+    rows = []
+    threshold = float(minimum_rating[:-1]) if minimum_rating != "All" else None
+    for venue in venues:
+        summary = summaries[venue["id"]]
+        rating = summary["overall"]
+        if threshold is not None and (rating is None or rating < threshold):
+            continue
+        colors = marker_color(rating)
+        price = summary["lowest_super_bock_price"]
+        rows.append({
+            "id": venue["id"], "name": venue["name"],
+            "neighbourhood": venue["neighbourhood"],
+            "latitude": venue["latitude"], "longitude": venue["longitude"],
+            "rating": rating,
+            "taste": f"{summary['quality']:.1f}" if summary["quality"] is not None else "no reviews",
+            "vibe": f"{summary['atmosphere']:.1f}" if summary["atmosphere"] is not None else "no reviews",
+            "price": price, "pin_label": price_label(price, rating),
+            "fill": colors["fill"], "line": colors["line"],
+        })
+    return rows
 
 
 def map_style_url(name):

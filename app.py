@@ -380,84 +380,156 @@ def show_conversation(user, conversation_id):
             st.text(message["text"])
 
 
-def show_messages_page(user):
-    """Show the conversation list, or one open conversation."""
-    conversation_id = st.session_state.get("conversation_id")
-    if conversation_id is not None:
-        conversation = logic.get_app_conversation_details(user, conversation_id)
-        if conversation is None:
-            st.session_state.pop("conversation_id", None)
-            st.rerun()
-        title = conversation["title"]
-        if st.button("← All conversations"):
-            st.session_state.pop("conversation_id", None)
-            st.rerun()
-        st.subheader(title)
-        if conversation["is_group"]:
-            show_group_controls(user, conversation)
-            show_group_events(user, conversation_id)
-        else:
-            show_notify_button(f"conversation-notify-{conversation_id}",
-                               logic.notify_app_conversation, (user, conversation_id))
-        show_conversation(user, conversation_id)
-        text = st.chat_input("Write a message", max_chars=logic.MAX_MESSAGE_LENGTH)
-        if text:
-            result = logic.send_app_message(user, conversation_id, text)
-            if result.success:
-                st.rerun()
-            st.error(result.message)
+def plain_text_title(title, size="1.02rem"):
+    """Return a bold title as escaped HTML so names are shown exactly as written."""
+    return (f'<div style="font-weight:600;font-size:{size};line-height:1.3">'
+            f'{html.escape(title)}</div>')
+
+
+def conversation_subtitle(conversation):
+    """Describe a conversation in one line: members, or who it is with."""
+    if conversation["is_group"]:
+        names = ", ".join(member["username"] for member in conversation["members"])
+        return f"Group · {len(conversation['members'])} members · {names}"
+    if conversation["other_role"] == "business":
+        return "Direct message · Bar owner"
+    return "Direct message"
+
+
+def show_conversation_avatar(conversation, size, target):
+    """Show the other person's picture, or a shared badge for a group."""
+    if conversation["is_group"]:
+        show_initial_circle("Group", size, target,
+                            background="#f7e2bd", colour="#7a4a00")
         return
+    show_avatar({"username": conversation["title"],
+                 "image_id": conversation.get("other_image_id")}, size, target)
 
-    st.header("Messages")
-    with st.expander("New message"):
-        query = st.text_input("Search by username", key="message_search")
-        people = logic.search_app_people(user, query)
-        if query.strip() and not people:
-            st.write("No users found.")
-        for person in people:
-            avatar_col, name_col, button_col = st.columns([1, 3, 1])
-            show_avatar(person, 40, avatar_col)
-            name_col.write(person["username"])
-            if person["role"] == "business":
-                name_col.caption("Bar")
-            if button_col.button("Message", key=f"message-{person['id']}"):
-                result = logic.start_app_direct_conversation(user, person["id"])
-                if result.success:
-                    st.session_state.conversation_id = result.conversation_id
-                    st.rerun()
-                st.error(result.message)
 
-    with st.expander("New group"):
-        group_name = st.text_input("Group name (optional)", max_chars=logic.MAX_GROUP_NAME_LENGTH)
-        candidates = logic.get_app_group_candidates(user)
-        names_by_id = {person["id"]: person["username"] for person in candidates}
-        member_ids = st.multiselect("Members", list(names_by_id), format_func=names_by_id.get)
-        if st.button("Create group", key="create-group"):
-            result = logic.create_app_group(user, group_name, member_ids)
+def show_conversation_card(user, conversation, key):
+    """Show one conversation as a card: who it is with, the last message and a way in."""
+    with st.container(border=True):
+        avatar_col, text_col, open_col = st.columns([1, 5, 1.4],
+                                                    vertical_alignment="center")
+        show_conversation_avatar(conversation, 40, avatar_col)
+        text_col.markdown(plain_text_title(conversation["title"]),
+                          unsafe_allow_html=True)
+        text_col.caption(conversation_subtitle(conversation))
+        if conversation["last_message"]:
+            preview = conversation["last_message"]
+            if conversation["last_sender_id"] == user["id"]:
+                preview = "You: " + preview
+            text_col.text(preview if len(preview) <= 70 else preview[:67] + "...")
+            text_col.caption(logic.format_message_time(conversation["last_message_at"]))
+        else:
+            text_col.caption("No messages yet")
+        if open_col.button("Open", key=f"{key}-{conversation['id']}",
+                           type="primary", width="stretch"):
+            st.session_state.conversation_id = conversation["id"]
+            st.rerun()
+
+
+def show_new_message_picker(user):
+    """Search for a person and start or reopen a direct conversation."""
+    query = st.text_input("Search by username", key="message_search")
+    people = logic.search_app_people(user, query)
+    if not query.strip():
+        st.caption("Type a username to find someone to write to.")
+    elif not people:
+        st.caption("No users found.")
+    for person in people:
+        avatar_col, name_col, button_col = st.columns([1, 3, 1],
+                                                      vertical_alignment="center")
+        show_avatar(person, 40, avatar_col)
+        name_col.write(person["username"])
+        if person["role"] == "business":
+            name_col.caption("Bar")
+        if button_col.button("Message", key=f"message-{person['id']}"):
+            result = logic.start_app_direct_conversation(user, person["id"])
             if result.success:
                 st.session_state.conversation_id = result.conversation_id
                 st.rerun()
             st.error(result.message)
 
-    conversations = logic.list_app_conversations(user)
-    if not conversations:
-        st.write("No conversations yet. Use New message to find someone.")
-    for conversation in conversations:
-        avatar_col, text_col, button_col = st.columns([1, 4, 1])
-        show_avatar({"username": conversation["title"],
-                     "image_id": conversation.get("other_image_id")}, 40, avatar_col)
-        text_col.write(conversation["title"] + (" · Bar owner" if conversation["other_role"] == "business" else ""))
-        if conversation["last_message"]:
-            preview = conversation["last_message"]
-            if conversation["last_sender_id"] == user["id"]:
-                preview = "You: " + preview
-            text_col.text(preview if len(preview) <= 80 else preview[:77] + "...")
-            text_col.caption(logic.format_message_time(conversation["last_message_at"]))
-        else:
-            text_col.caption("No messages yet")
-        if button_col.button("Open", key=f"conversation-{conversation['id']}"):
-            st.session_state.conversation_id = conversation["id"]
+
+def show_new_group_form(user):
+    """Pick members and a name, then create a group conversation."""
+    group_name = st.text_input("Group name (optional)",
+                               max_chars=logic.MAX_GROUP_NAME_LENGTH)
+    candidates = logic.get_app_group_candidates(user)
+    names_by_id = {person["id"]: person["username"] for person in candidates}
+    member_ids = st.multiselect("Members", list(names_by_id),
+                                format_func=names_by_id.get)
+    st.caption("Choose at least 2 people. Without a name, the group is shown by its "
+               "first members.")
+    if st.button("Create group", key="create-group"):
+        result = logic.create_app_group(user, group_name, member_ids)
+        if result.success:
+            st.session_state.conversation_id = result.conversation_id
             st.rerun()
+        st.error(result.message)
+
+
+def show_open_conversation(user, conversation_id):
+    """Show one conversation: who it is with, its meetups and the messages."""
+    conversation = logic.get_app_conversation_details(user, conversation_id)
+    if conversation is None:
+        st.session_state.pop("conversation_id", None)
+        st.rerun()
+    if st.button("← All conversations", key="back-to-conversations"):
+        st.session_state.pop("conversation_id", None)
+        st.rerun()
+    avatar_col, title_col = st.columns([1, 7], vertical_alignment="center")
+    show_conversation_avatar(conversation, 56, avatar_col)
+    title_col.markdown(plain_text_title(conversation["title"], size="1.5rem"),
+                       unsafe_allow_html=True)
+    title_col.caption(conversation_subtitle(conversation))
+    if conversation["is_group"]:
+        show_group_controls(user, conversation)
+        show_group_events(user, conversation_id)
+    else:
+        show_notify_button(f"conversation-notify-{conversation_id}",
+                           logic.notify_app_conversation, (user, conversation_id))
+    st.divider()
+    show_conversation(user, conversation_id)
+    text = st.chat_input("Write a message", max_chars=logic.MAX_MESSAGE_LENGTH)
+    if text:
+        result = logic.send_app_message(user, conversation_id, text)
+        if result.success:
+            st.rerun()
+        st.error(result.message)
+
+
+def show_messages_page(user):
+    """Show my conversations, split into direct chats and groups, or one open chat."""
+    if st.session_state.get("conversation_id") is not None:
+        show_open_conversation(user, st.session_state.conversation_id)
+        return
+
+    st.header("My messages")
+    conversations = logic.list_app_conversations(user)
+    direct = [item for item in conversations if not item["is_group"]]
+    groups = [item for item in conversations if item["is_group"]]
+    st.caption("Everything here is yours: the people you write to and the groups "
+               "you are a member of. Newest activity first.")
+
+    direct_tab, group_tab = st.tabs([f"Direct messages ({len(direct)})",
+                                     f"My groups ({len(groups)})"])
+    with direct_tab:
+        with st.expander("New message", icon=":material/person_add:"):
+            show_new_message_picker(user)
+        if not direct:
+            st.caption("No direct messages yet. Use New message to find someone.")
+        for conversation in direct:
+            show_conversation_card(user, conversation, "direct")
+    with group_tab:
+        with st.expander("New group", icon=":material/group_add:"):
+            show_new_group_form(user)
+        if not groups:
+            st.caption("You are not in any groups yet. Use New group to plan a "
+                       "Bock a Bro with friends.")
+        for conversation in groups:
+            show_conversation_card(user, conversation, "group")
 
 
 def show_group_controls(user, conversation):
@@ -532,7 +604,7 @@ def show_group_events(user, conversation_id):
         for event in event_lists["upcoming"]:
             show_group_event(user, event)
     if event_lists["past"]:
-        st.subheader("Tidligere")
+        st.subheader("Earlier")
         for event in event_lists["past"]:
             show_group_event(user, event)
 
@@ -632,6 +704,20 @@ def show_person_list(user, people, empty_text, key):
                           on_click=open_profile, args=(person["id"], user["id"]))
 
 
+def show_initial_circle(text, size=48, target=None, background="#e7edf2",
+                        colour="#263746"):
+    """Show one letter in a coloured circle, used when there is no picture."""
+    if target is None:
+        target = st
+    initial = html.escape(text[:1].upper())
+    target.markdown(
+        f'<div style="width:{size}px;height:{size}px;border-radius:50%;'
+        f'display:flex;align-items:center;justify-content:center;'
+        f'background:{background};color:{colour};font-weight:700">{initial}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def show_avatar(person, size=48, target=None):
     """Show a stored profile picture or a circular username initial."""
     if target is None:
@@ -640,13 +726,7 @@ def show_avatar(person, size=48, target=None):
     if avatar["bytes"]:
         target.image(avatar["bytes"], width=size)
         return
-    initial = html.escape(avatar["initial"])
-    target.markdown(
-        f'<div style="width:{size}px;height:{size}px;border-radius:50%;'
-        f'display:flex;align-items:center;justify-content:center;'
-        f'background:#e7edf2;color:#263746;font-weight:700">{initial}</div>',
-        unsafe_allow_html=True,
-    )
+    show_initial_circle(avatar["initial"], size, target)
 
 
 def show_profile(user, profile_id):

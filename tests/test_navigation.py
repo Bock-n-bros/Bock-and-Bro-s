@@ -1,6 +1,7 @@
 """Tests for shareable navigation state."""
 
 import ast
+import re
 from pathlib import Path
 
 import logic
@@ -146,10 +147,85 @@ def test_back_context_restores_venue_query_and_map_preview_state():
     venue_source = ast.get_source_segment(source, functions["run_venues_page"])
     list_source = ast.get_source_segment(source, functions["show_venue_list"])
     assert 'history.append({"page": source, "query": dict(st.query_params)})' in open_source
-    assert 'st.query_params.update(previous["query"])' in back_source
+    assert 'query_params = previous["query"] if previous else {}' in back_source
+    assert "query_params=query_params" in back_source
     assert "st.session_state.map_preview_id = venue_id" in venue_source
     assert 'key="venue_search"' in list_source
     assert 'key="venue_neighbourhood"' in list_source
     assert 'key="venue_type"' in list_source
+
+
+def test_internal_venue_and_profile_links_do_not_use_new_tabs_or_link_buttons():
+    source = APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    internal_query = re.compile(r"[?&](?:venue|user)=")
+
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        if isinstance(call.func, ast.Attribute) and call.func.attr == "link_button":
+            call_source = ast.get_source_segment(source, call)
+            assert not internal_query.search(call_source)
+            assert "venue_link_params" not in call_source
+            assert "profile_link_params" not in call_source
+            assert "https://" in call_source
+        if isinstance(call.func, ast.Attribute) and call.func.attr == "markdown":
+            call_source = ast.get_source_segment(source, call)
+            if "<a" in call_source and (
+                internal_query.search(call_source)
+                or "venue_link_params" in call_source
+                or "profile_link_params" in call_source
+            ):
+                assert 'target="_self"' in call_source
+
+    detail_link = next(node for node in tree.body
+                       if isinstance(node, ast.FunctionDef)
+                       and node.name == "detail_text_link")
+    detail_source = ast.get_source_segment(source, detail_link)
+    assert ".button(" in detail_source
+    assert "open_venue_link" in detail_source and "open_profile_link" in detail_source
+    assert "<a" not in detail_source and "urlencode" not in detail_source
+
+
+def test_opening_details_passes_ids_and_source_through_page_switch():
+    assert logic.venue_link_params(5, "Feed") == {
+        "venue": "5", "from": "feed"
+    }
+    assert logic.profile_link_params(5, "Feed") == {
+        "user": "5", "from": "feed"
+    }
+
+    source = APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    open_detail = functions["open_detail"]
+    open_source = ast.get_source_segment(source, open_detail)
+    switch_call = next(
+        call for call in ast.walk(open_detail)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "switch_page"
+    )
+    query_keyword = next(
+        keyword for keyword in switch_call.keywords
+        if keyword.arg == "query_params"
+    )
+    assert isinstance(query_keyword.value, ast.Name)
+    assert query_keyword.value.id == "query_params"
+    assert "query_params = query or logic.build_detail_query" in open_source
+
+
+def test_venue_route_shows_map_without_id_and_not_found_for_unknown_id():
+    source = APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    route_source = ast.get_source_segment(source, functions["run_venues_page"])
+    assert 'query_has("venue")' in route_source
+    assert 'logic.get_venue(venue_id)' in route_source
+    assert 'render_not_found("Venues")' in route_source
+    assert 'show_venue_list(user)' in route_source
+    profile_route = ast.get_source_segment(source, functions["run_people_page"])
+    assert 'query_has("user")' in profile_route
+    assert 'logic.get_app_profile(user, profile_id)' in profile_route
+    assert 'render_not_found("People")' in profile_route
+    assert 'show_people_page(user)' in profile_route
 
 

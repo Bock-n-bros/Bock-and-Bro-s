@@ -79,6 +79,14 @@ POST_HEADER_LINK_CSS = """
 .detail-text-icon {
     font-size: 0.82em;
 }
+div[class*="st-key-text-link-"] button[kind="tertiary"] {
+    color: inherit;
+    font-weight: 700;
+    padding: 0.15rem 0.35rem;
+}
+div[class*="st-key-text-link-"] button[kind="tertiary"]:hover {
+    text-decoration: underline;
+}
 .post-header-at {
     margin: 0 4px;
 }

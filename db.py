@@ -305,6 +305,30 @@ def get_venue_by_id(venue_id):
         return _row_dict(_execute(connection, backend, "SELECT * FROM venues WHERE id = ?", (venue_id,)).fetchone(), columns)
 
 
+def remove_demo_venues():
+    """Delete unreferenced venues whose names begin with the demo prefix."""
+    init_db()
+    backend, _ = _backend()
+    deleted = []
+    with _connect() as connection:
+        venues = _execute(connection, backend, "SELECT id, name FROM venues").fetchall()
+        for venue_id, name in venues:
+            if not name.startswith("Demo "):
+                continue
+            cursor = _execute(
+                connection, backend,
+                "DELETE FROM venues WHERE id = ? AND name = ? "
+                "AND NOT EXISTS (SELECT 1 FROM reviews WHERE reviews.venue_id = venues.id) "
+                "AND NOT EXISTS (SELECT 1 FROM venue_follows WHERE venue_follows.venue_id = venues.id) "
+                "AND NOT EXISTS (SELECT 1 FROM posts WHERE posts.venue_id = venues.id) "
+                "AND NOT EXISTS (SELECT 1 FROM events WHERE events.venue_id = venues.id)",
+                (venue_id, name),
+            )
+            if cursor.rowcount:
+                deleted.append(name)
+    return deleted
+
+
 def save_review(venue_id, user_id, values, now=None):
     """Insert a review or update the user's existing review for the venue."""
     init_db()

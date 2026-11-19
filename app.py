@@ -9,6 +9,7 @@ from urllib.parse import quote_plus
 
 import logic
 import styles
+import weather
 
 
 try:
@@ -19,7 +20,220 @@ except RuntimeError as error:
 st.title("Bock'n Bros")
 
 
-def render_map(venues):
+def open_review_form(venue_id):
+    """Open the compact-card review form for one venue."""
+    st.session_state.review_form_venue_id = venue_id
+
+
+def render_review_form(venue, user):
+    """Render the customer review form for a venue."""
+    previous = logic.get_customer_review(user["id"], venue["id"])
+    venue_id = venue["id"]
+    with st.form(f"review_form_{venue_id}"):
+        atmosphere = st.slider(
+            "Atmosphere", 1, 5, previous["atmosphere"] if previous else 3,
+            key=f"review_atmosphere_{venue_id}",
+        )
+        value = st.slider(
+            "Value for money", 1, 5, previous["value"] if previous else 3,
+            key=f"review_value_{venue_id}",
+        )
+        quality = st.slider(
+            "Quality", 1, 5, previous["quality"] if previous else 3,
+            key=f"review_quality_{venue_id}",
+        )
+        old_price = previous["super_bock_price"] if previous else None
+        price_given = st.checkbox(
+            "Add Super Bock price", value=old_price is not None,
+            key=f"review_price_given_{venue_id}",
+        )
+        price = st.number_input(
+            "Super Bock price (€)", min_value=0.0, max_value=10.0,
+            value=float(old_price or 0.5), step=0.1, key=f"review_price_{venue_id}",
+        )
+        comment = st.text_area(
+            "Comment", value=(previous["comment"] or "") if previous else "",
+            max_chars=500, key=f"review_comment_{venue_id}",
+        )
+        submitted = st.form_submit_button(
+            "Update review" if previous else "Submit review"
+        )
+    if submitted:
+        result = logic.submit_app_review(
+            user, venue_id, atmosphere, value, quality,
+            price if price_given else None, comment,
+        )
+        if result.success:
+            st.session_state.pop("review_form_venue_id", None)
+            st.success(result.message)
+            st.rerun()
+        st.error(result.message)
+
+
+def render_venue_weather(venue):
+    """Show available weather sources and the terrace recommendation."""
+    venue_weather = weather.get_venue_weather(venue["latitude"], venue["longitude"])
+    open_meteo = venue_weather["open_meteo"]
+    ipma = venue_weather["ipma"]
+    st.markdown(styles.VENUE_WEATHER_CSS, unsafe_allow_html=True)
+    with st.container(key="venue_weather_box"):
+        if open_meteo:
+            code = open_meteo["weather_code"]
+            icon = (
+                "☀️" if code == 0 else
+                "🌤️" if code == 1 else
+                "⛅" if code == 2 else
+                "☁️" if code in {3, 45, 48} else
+                "🌧️" if code in {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82} else
+                "🌨️" if code in {71, 73, 75, 77, 85, 86} else
+                "⛈️" if code in {95, 96, 99} else "🌦️"
+            )
+            st.caption(
+                f"{icon} {logic.describe_weather(code)} · "
+                f"{open_meteo['temperature']:g}°C · rain chance next hour "
+                f"{open_meteo['rain_chance']:g}% (Open-Meteo, {open_meteo['time']})"
+            )
+        if ipma:
+            st.caption(
+                f"Measured last hour: {ipma['precipitation']:.1f} mm, "
+                f"{ipma['temperature']:.1f}°C (IPMA, {ipma['station']}, {ipma['time']})"
+            )
+        if not open_meteo and not ipma:
+            st.caption("Weather unavailable")
+        if open_meteo and ipma and logic.is_terrace_weather(
+            open_meteo["temperature"], open_meteo["precipitation"],
+            ipma["precipitation"], open_meteo["rain_chance"],
+            open_meteo["weather_code"],
+        ):
+            st.markdown(
+                '<span style="display:inline-block;padding:3px 9px;border-radius:12px;'
+                'background:#e6f4ea;color:#176b35;font-size:0.85rem;font-weight:600">'
+                '☀️ Terrace weather</span>',
+                unsafe_allow_html=True,
+            )
+
+
+def render_venue_card(venue, user, compact=False):
+    """Render shared venue details, reviews, weather and relevant actions."""
+    venue_id = venue["id"]
+    reviews = logic.get_venue_reviews(venue_id)
+    summary = logic.get_venue_review_summary(venue_id)
+    cheapest_price = logic.cheapest_review_price(reviews)
+
+    if compact:
+        st.subheader(venue["name"])
+        st.write(f"{venue['venue_type']} · {venue['neighbourhood']}")
+        st.write(venue["address"])
+    else:
+        st.header(venue["name"])
+        st.write(f"Type: {venue['venue_type']}")
+        st.write(f"Neighbourhood: {venue['neighbourhood']}")
+        st.write(f"Address: {venue['address']}")
+        st.write(f"Shows football: {venue['shows_football']}")
+        st.write(venue["description"])
+
+    if compact:
+        st.write(logic.format_venue_card_summary(summary, cheapest_price))
+
+    render_venue_weather(venue)
+    follow_status = logic.get_app_venue_follow_status(user, venue_id)
+    if compact:
+        st.caption(f"{follow_status['followers']} followers")
+        previews = logic.review_preview(reviews)
+        if previews:
+            st.caption("Latest reviews")
+            for preview in previews:
+                st.write(
+                    f"{preview['username']} · {preview['rating']:.1f} ★ · "
+                    f"{preview['time_ago']}"
+                )
+                if preview["comment"]:
+                    st.text(preview["comment"])
+
+        write_col, follow_col, reviews_col = st.columns(3)
+        if user and user.get("role") == "customer":
+            write_col.button(
+                "Write a review", key=f"write-review-{venue_id}",
+                on_click=open_review_form, args=(venue_id,), type="primary",
+            )
+        else:
+            write_col.button(
+                "Write a review", key=f"write-review-{venue_id}",
+                type="primary", disabled=True,
+            )
+            write_col.caption("Only customers can leave reviews.")
+        if follow_status["is_following"]:
+            follow_col.button("Following", key=f"following-{venue_id}", disabled=True)
+        elif follow_col.button("Follow bar", key=f"follow-{venue_id}"):
+            result = logic.follow_app_venue(user, venue_id)
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+        reviews_col.button(
+            "See all reviews", key=f"see-reviews-{venue_id}",
+            on_click=open_venue, args=(venue_id,),
+        )
+        google_query = quote_plus(f"{venue['name']} {venue['address']}")
+        directions_query = quote_plus(f"{venue['latitude']},{venue['longitude']}")
+        maps_col, directions_col = st.columns(2)
+        maps_col.link_button(
+            "Open in Google Maps",
+            f"https://www.google.com/maps/search/?api=1&query={google_query}",
+            type="tertiary", width="content",
+        )
+        directions_col.link_button(
+            "Walking directions",
+            "https://www.google.com/maps/dir/?api=1&destination="
+            f"{directions_query}&travelmode=walking",
+            type="tertiary", width="content",
+        )
+        if user and user.get("role") == "customer":
+            if st.session_state.get("review_form_venue_id") == venue_id:
+                render_review_form(venue, user)
+        return
+
+    count_col, button_col, _ = st.columns([1, 1, 3])
+    count_col.caption(f"{follow_status['followers']} followers")
+    if follow_status["is_following"]:
+        if button_col.button("Unfollow bar", key="unfollow-venue"):
+            logic.unfollow_app_venue(user, venue_id)
+            st.rerun()
+    elif button_col.button("Follow bar", key=f"follow-{venue_id}", type="primary"):
+        result = logic.follow_app_venue(user, venue_id)
+        if result.success:
+            st.rerun()
+        st.error(result.message)
+    if summary["review_count"]:
+        st.write(f"{summary['overall']:.1f} ★ · {summary['review_count']} reviews")
+        st.write(
+            f"Atmosphere {summary['atmosphere']:.1f} · Value {summary['value']:.1f} · "
+            f"Quality {summary['quality']:.1f}"
+        )
+        price_average = summary["average_super_bock_price"]
+        st.write(
+            f"Average Super Bock price: €{price_average:.2f}"
+            if price_average is not None else "No Super Bock prices yet"
+        )
+    else:
+        st.write("No reviews yet")
+    st.subheader("Reviews")
+    if user["role"] == "customer":
+        render_review_form(venue, user)
+    else:
+        st.write("Only customers can leave reviews.")
+    for review in reviews:
+        st.write(
+            f"{review['username']} · Atmosphere {review['atmosphere']} · "
+            f"Value {review['value']} · Quality {review['quality']}"
+        )
+        if review["super_bock_price"] is not None:
+            st.write(f"Super Bock: €{review['super_bock_price']:.2f}")
+        if review["comment"]:
+            st.text(review["comment"])
+        st.caption(logic.format_review_date(review))
+
+
+def render_map(venues, user):
     """Render the filtered Lisbon venue map and selected venue card."""
     st.markdown(styles.MAP_LAYOUT_CSS, unsafe_allow_html=True)
     heading_col, filter_col = st.columns([2, 3], vertical_alignment="center")
@@ -105,22 +319,8 @@ def render_map(venues):
         selected_id = selected_objects[0]["id"]
         selected = next((venue for venue in venues if venue["id"] == selected_id), None)
         if selected:
-            st.subheader(selected["name"])
-            st.write(f"{selected['neighbourhood']} · {selected['address']}")
-            maps_query = quote_plus(f"{selected['name']} {selected['address']}")
-            directions_query = quote_plus(
-                f"{selected['latitude']},{selected['longitude']}"
-            )
-            button_col, directions_col = st.columns(2)
-            button_col.link_button(
-                "Open in Google Maps",
-                f"https://www.google.com/maps/search/?api=1&query={maps_query}",
-            )
-            directions_col.link_button(
-                "Walking directions",
-                "https://www.google.com/maps/dir/?api=1&destination="
-                f"{directions_query}&travelmode=walking",
-            )
+            with st.container(border=True):
+                render_venue_card(selected, user, compact=True)
 
 def google_auth_is_configured():
     """Return whether the required Streamlit auth settings are available."""
@@ -394,6 +594,7 @@ def show_notify_button(key, action, args):
 
 def open_venue(venue_id):
     """Button callback: go to a venue's page."""
+    st.session_state.pop("review_form_venue_id", None)
     st.session_state.venue_id = venue_id
     st.session_state.page = "Venues"
 
@@ -690,62 +891,7 @@ if logic.can_view_venues(user):
     if st.session_state.get("venue_id") is not None:
         selected = logic.get_venue(st.session_state.venue_id)
         if selected is not None:
-            st.header(selected["name"])
-            st.write(f"Type: {selected['venue_type']}")
-            st.write(f"Neighbourhood: {selected['neighbourhood']}")
-            st.write(f"Address: {selected['address']}")
-            st.write(f"Shows football: {selected['shows_football']}")
-            st.write(selected["description"])
-            follow_status = logic.get_app_venue_follow_status(user, selected["id"])
-            count_col, button_col, _ = st.columns([1, 1, 3])
-            count_col.caption(f"{follow_status['followers']} followers")
-            if follow_status["is_following"]:
-                if button_col.button("Unfollow bar", key="unfollow-venue"):
-                    logic.unfollow_app_venue(user, selected["id"])
-                    st.rerun()
-            elif button_col.button("Follow bar", key="follow-venue", type="primary"):
-                result = logic.follow_app_venue(user, selected["id"])
-                if result.success:
-                    st.rerun()
-                st.error(result.message)
-            summary = logic.get_venue_review_summary(selected["id"])
-            st.subheader("Reviews")
-            if summary["review_count"]:
-                st.write(f"{summary['overall']:.1f} ★ · {summary['review_count']} reviews")
-                st.write(f"Atmosphere {summary['atmosphere']:.1f} · Value {summary['value']:.1f} · Quality {summary['quality']:.1f}")
-                price_average = summary["average_super_bock_price"]
-                st.write(f"Average Super Bock price: €{price_average:.2f}" if price_average is not None else "No Super Bock prices yet")
-            else:
-                st.write("No reviews yet")
-            if user["role"] == "customer":
-                previous = logic.get_customer_review(user["id"], selected["id"])
-                with st.form("review_form"):
-                    atmosphere = st.slider("Atmosphere", 1, 5, previous["atmosphere"] if previous else 3)
-                    value = st.slider("Value for money", 1, 5, previous["value"] if previous else 3)
-                    quality = st.slider("Quality", 1, 5, previous["quality"] if previous else 3)
-                    old_price = previous["super_bock_price"] if previous else None
-                    price_given = st.checkbox("Add Super Bock price", value=old_price is not None)
-                    price = st.number_input("Super Bock price (€)", min_value=0.0, max_value=10.0,
-                                            value=float(old_price or 0.5), step=0.1)
-                    old_comment = (previous["comment"] or "") if previous else ""
-                    comment = st.text_area("Comment", value=old_comment, max_chars=500)
-                    submitted = st.form_submit_button("Update review" if previous else "Submit review")
-                if submitted:
-                    result = logic.submit_app_review(user, selected["id"], atmosphere, value, quality,
-                                                     price if price_given else None, comment)
-                    if result.success:
-                        st.success(result.message)
-                        st.rerun()
-                    st.error(result.message)
-            else:
-                st.write("Only customers can leave reviews.")
-            for review in logic.get_venue_reviews(selected["id"]):
-                st.write(f"{review['username']} · Atmosphere {review['atmosphere']} · Value {review['value']} · Quality {review['quality']}")
-                if review["super_bock_price"] is not None:
-                    st.write(f"Super Bock: €{review['super_bock_price']:.2f}")
-                if review["comment"]:
-                    st.text(review["comment"])
-                st.caption(logic.format_review_date(review))
+            render_venue_card(selected, user, compact=False)
             show_venue_community_photos(user, selected["id"])
             st.subheader("Posts")
             with st.expander("Post about this venue", icon=":material/add_a_photo:"):
@@ -761,7 +907,7 @@ if logic.can_view_venues(user):
             if not venues:
                 st.write("No venues are available right now. The venue list could not be loaded.")
             else:
-                render_map(venues)
+                render_map(venues, user)
         with venues_tab:
             st.header("Venues")
             if not venues:

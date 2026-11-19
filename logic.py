@@ -26,6 +26,97 @@ MAP_STYLES = {
 }
 
 
+WEATHER_DESCRIPTIONS = {
+    0: "Clear sky",
+    1: "Mainly clear",
+    2: "Partly cloudy",
+    3: "Overcast",
+    45: "Fog",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    53: "Drizzle",
+    55: "Dense drizzle",
+    56: "Freezing drizzle",
+    57: "Dense freezing drizzle",
+    61: "Rain",
+    63: "Moderate rain",
+    65: "Heavy rain",
+    66: "Freezing rain",
+    67: "Heavy freezing rain",
+    71: "Snowfall",
+    73: "Moderate snowfall",
+    75: "Heavy snowfall",
+    77: "Snow grains",
+    80: "Rain showers",
+    81: "Moderate rain showers",
+    82: "Violent rain showers",
+    85: "Snow showers",
+    86: "Heavy snow showers",
+    95: "Thunderstorm",
+    96: "Thunderstorm with hail",
+    99: "Thunderstorm with heavy hail",
+}
+
+
+def describe_weather(code):
+    """Return a readable label for a WMO weather code."""
+    try:
+        return WEATHER_DESCRIPTIONS.get(int(code), "Unknown conditions")
+    except (TypeError, ValueError):
+        return "Unknown conditions"
+
+
+def is_terrace_weather(temperature, precipitation, measured_precipitation,
+                       rain_chance, weather_code):
+    """Return whether current and observed weather suits a terrace."""
+    try:
+        values = [float(value) for value in (
+            temperature, precipitation, measured_precipitation, rain_chance,
+        )]
+        code = int(weather_code)
+    except (TypeError, ValueError):
+        return False
+    if not all(math.isfinite(value) for value in values):
+        return False
+    temperature, precipitation, measured_precipitation, rain_chance = values
+    return (
+        temperature >= 18
+        and precipitation == 0
+        and measured_precipitation == 0
+        and rain_chance < 30
+        and code in {0, 1, 2}
+    )
+
+
+def closest_station(lat, lon, stations):
+    """Return the nearest station from a list of IPMA GeoJSON features."""
+    nearest = None
+    nearest_distance = float("inf")
+    for station in stations or []:
+        try:
+            properties = station.get("properties", station)
+            coordinates = station.get("geometry", {}).get("coordinates")
+            if coordinates:
+                station_lon, station_lat = map(float, coordinates[:2])
+            else:
+                station_lat = float(station["latitude"])
+                station_lon = float(station["longitude"])
+            lat1, lat2 = math.radians(float(lat)), math.radians(station_lat)
+            delta_lat = lat2 - lat1
+            delta_lon = math.radians(station_lon - float(lon))
+            haversine = (
+                math.sin(delta_lat / 2) ** 2
+                + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2) ** 2
+            )
+            distance = 2 * math.asin(min(1, math.sqrt(haversine)))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        if distance < nearest_distance:
+            nearest = station
+            nearest_distance = distance
+    return nearest
+
+
 def marker_color(avg_rating):
     """Return an RGB marker color for a venue's average rating."""
     if avg_rating is None:
@@ -200,6 +291,11 @@ def get_venues():
     return db.get_all_venues()
 
 
+def remove_demo_venues():
+    """Remove eligible demo venues through the configured database."""
+    return db.remove_demo_venues()
+
+
 def get_venue_review_summary(venue_id):
     """Fetch a venue's review summary for a screen."""
     return db.get_review_summary(venue_id)
@@ -234,6 +330,64 @@ def format_review_date(review):
     if updated > created:
         return f"Updated {updated.day} {updated.strftime('%b %Y')}"
     return f"{created.day} {created.strftime('%b %Y')}"
+
+
+def cheapest_review_price(reviews):
+    """Return the lowest logged Super Bock price, if any review has one."""
+    prices = [review["super_bock_price"] for review in reviews
+              if review.get("super_bock_price") is not None]
+    return min(prices) if prices else None
+
+
+def format_venue_card_summary(summary, cheapest_price):
+    """Format a venue's score, review count and cheapest logged price."""
+    if not summary["review_count"]:
+        return "No reviews yet"
+    price_text = (
+        f"from €{cheapest_price:.2f}" if cheapest_price is not None
+        else "no price logged"
+    )
+    return f"★ {summary['overall']:.1f} · {summary['review_count']} reviews · {price_text}"
+
+
+def review_rating(review):
+    """Return one review's mean rating rounded to one decimal place."""
+    scores = [review[field] for field in ("atmosphere", "value", "quality")]
+    return round(sum(scores) / len(scores), 1)
+
+
+def format_time_ago(timestamp, now=None):
+    """Format a review timestamp as a short relative age."""
+    created = datetime.fromisoformat(timestamp)
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    seconds = max(0, int((now - created).total_seconds()))
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        amount, unit = seconds // 60, "minute"
+    elif seconds < 86400:
+        amount, unit = seconds // 3600, "hour"
+    else:
+        amount, unit = seconds // 86400, "day"
+    suffix = "" if amount == 1 else "s"
+    return f"{amount} {unit}{suffix} ago"
+
+
+def review_preview(reviews, now=None):
+    """Return display data for the three newest venue reviews."""
+    preview = []
+    for review in reviews[:3]:
+        preview.append({
+            "username": review["username"],
+            "rating": review_rating(review),
+            "comment": (review.get("comment") or "").strip()[:140],
+            "time_ago": format_time_ago(review["created_at"], now),
+        })
+    return preview
 
 
 def validate_venue(row):

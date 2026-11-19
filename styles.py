@@ -62,3 +62,18 @@ MAP_LEGEND_HTML = """
   <span class="map-count">Showing {shown} of {total} bars</span>
 </div>
 """
+
+VENUE_WEATHER_CSS = """
+<style>
+.st-key-venue_weather_box {
+    background: #f6f8fb;
+    border: 1px solid #e6ebf2;
+    border-radius: 10px;
+    padding: 0.4rem 0.7rem;
+    margin: 0.4rem 0 0.6rem;
+}
+.st-key-venue_weather_box [data-testid="stCaptionContainer"] {
+    margin-bottom: 0;
+}
+</style>
+"""

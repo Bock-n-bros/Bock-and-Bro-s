@@ -219,6 +219,13 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** showing UTC.
 - **Where:** `logic.format_message_time`.
 
+### D-054 · Venue weather combines independent public sources
+
+- **What:** venue cards show Open-Meteo forecasts and the nearest Lisbon IPMA station reading independently, cached for 15 minutes.
+- **Why:** customers can compare a forecast with a measured hourly observation, while a failed source never produces a guessed reading.
+- **Instead of:** relying on one provider or filling missing data with defaults.
+- **Where:** `weather.py`, weather rules in `logic.py`, venue cards in `app.py`.
+
 ## Following and profiles (spec 05)
 
 ### D-036 · Friends are mutual follows, not a separate friend request
@@ -374,3 +381,31 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** on Supabase every CREATE/ALTER statement is a network round trip; with init_db called from many read functions, the map page sent hundreds of them and became very slow.
 - **Instead of:** checking all ten tables before every read.
 - **Where:** `db.init_db`.
+
+### D-055 · Compact map cards and venue pages share one renderer
+
+- **What:** the selected map venue and full venue page use `render_venue_card` with a compact mode for the map.
+- **Why:** weather, summaries and review actions stay consistent while the map keeps a shorter card.
+- **Instead of:** maintaining separate copies of the same venue details and actions.
+- **Where:** `app.py` and the card data helpers in `logic.py`.
+
+### D-056 · Demo venues are removed only when unreferenced
+
+- **What:** the seed CSV contains real venues only, and a one-off script deletes `Demo ` rows only when they have no reviews, venue followers, posts or events.
+- **Why:** unused placeholders can be removed without losing user activity or breaking venue-linked records.
+- **Instead of:** deleting every matching venue or retaining fictional seed rows.
+- **Where:** `data/venues.csv`, `remove_demo_venues.py`, `db.py` and `tests/test_remove_demo_venues.py`.
+
+### D-057 · Compact venue summaries keep status and actions scannable
+
+- **What:** rating, count and cheapest price share one line; weather uses a muted box and actions use two compact rows.
+- **Why:** the selected map card keeps the key facts visible without repeating its no-review state.
+- **Instead of:** separate status lines and equally prominent navigation buttons.
+- **Where:** `logic.format_venue_card_summary`, `styles.py` and `app.py`.
+
+### D-058 · App logic references are checked against the logic module
+
+- **What:** a source-level test checks every `logic.<name>` used by `app.py` against `logic.py` definitions and imports.
+- **Why:** missing screen helpers fail in pytest instead of appearing only when a user opens the screen.
+- **Instead of:** relying on a manual app launch to find broken screen-to-logic references.
+- **Where:** `tests/test_app_logic_references.py`.

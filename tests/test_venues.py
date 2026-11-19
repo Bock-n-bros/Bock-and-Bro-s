@@ -148,7 +148,7 @@ def test_seed_csv_contains_more_lisbon_venues():
     csv_path = Path(__file__).resolve().parents[1] / "data" / "venues.csv"
     rows, errors = logic.validate_venues_csv(csv_path)
     assert errors == []
-    assert len(rows) >= 20
+    assert len(rows) >= 15
     assert {row["neighbourhood"] for row in rows} >= {
         "Bairro Alto", "Cais do Sodré", "Chiado", "Príncipe Real",
         "Alfama", "Graça", "Intendente", "Santos",

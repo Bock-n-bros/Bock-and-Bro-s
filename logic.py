@@ -230,6 +230,7 @@ class NotificationResult:
 
 
 MAX_POST_LENGTH = 500
+MAX_LOCATION_LENGTH = 60
 IMAGE_TYPES = ["jpg", "jpeg", "png", "heic", "heif", "webp"]
 MAX_MESSAGE_LENGTH = 1000
 MAX_GROUP_NAME_LENGTH = 50
@@ -1234,12 +1235,22 @@ def get_app_venue_follow_status(user, venue_id):
     return get_venue_follow_status(db, user, venue_id)
 
 
-def create_post(database, user, venue_id, text, image_bytes=None, image_name=None, now=None):
-    """Check permission and input, then save a post tied to a venue."""
+def create_post(database, user, venue_id, text, image_bytes=None, image_name=None, now=None,
+                location_name=None):
+    """Check permission and input, then save a post tied to a venue or to a typed-in location."""
     if not _is_logged_in(user):
         return PostResult(False, "Log in to post.")
-    if venue_id is None or database.get_venue_by_id(venue_id) is None:
-        return PostResult(False, "Choose the bar or café this post is about.")
+    if venue_id is None:
+        # "Other" location: a place that is not in the venue list, typed in by the user.
+        if not isinstance(location_name, str) or not location_name.strip():
+            return PostResult(False, "Choose the bar or café this post is about, or type in your own location.")
+        location_name = " ".join(location_name.split())
+        if len(location_name) > MAX_LOCATION_LENGTH:
+            return PostResult(False, f"Locations can be at most {MAX_LOCATION_LENGTH} characters.")
+    else:
+        location_name = None
+        if database.get_venue_by_id(venue_id) is None:
+            return PostResult(False, "Choose the bar or café this post is about.")
     if text is not None and not isinstance(text, str):
         return PostResult(False, "Post text must be text.")
     text = (text or "").strip()
@@ -1249,7 +1260,7 @@ def create_post(database, user, venue_id, text, image_bytes=None, image_name=Non
         return PostResult(False, "Add some text or a photo.")
     try:
         post_id = database.create_post(user["id"], venue_id, text or None,
-                                       image_bytes or None, image_name, now=now)
+                                       image_bytes or None, image_name, now=now, location_name=location_name)
     except ValueError as error:
         return PostResult(False, str(error))
     return PostResult(True, "Posted!", post_id)
@@ -1358,9 +1369,9 @@ def format_post_time(timestamp):
     return f"{moment.day} {moment.strftime('%b %Y, %H:%M')}"
 
 
-def create_app_post(user, venue_id, text, image_bytes=None, image_name=None):
+def create_app_post(user, venue_id, text, image_bytes=None, image_name=None, location_name=None):
     """Create a post through the configured database."""
-    return create_post(db, user, venue_id, text, image_bytes, image_name)
+    return create_post(db, user, venue_id, text, image_bytes, image_name, location_name=location_name)
 
 
 def get_app_feed(user):

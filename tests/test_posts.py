@@ -281,3 +281,68 @@ def test_renamed_file_with_heic_extension_is_refused(post_db):
 
     assert not result.success
     assert post_db.count_images() == 0
+
+
+def test_post_with_other_location_is_saved_without_a_venue(post_db):
+    anna = make_user(post_db, "anna")
+
+    result = logic.create_post(post_db, anna, None, "Sunset beers", location_name="  Miradouro   da Graça ")
+
+    assert result.success
+    post = post_db.get_user_posts(anna["id"])[0]
+    assert post["venue_id"] is None
+    assert post["venue_name"] is None
+    assert post["location_name"] == "Miradouro da Graça"
+
+
+def test_other_location_post_appears_in_followers_feed(post_db):
+    anna = make_user(post_db, "anna")
+    ben = make_user(post_db, "ben")
+    logic.follow_user(post_db, ben, anna["id"])
+
+    logic.create_post(post_db, anna, None, "Picnic", location_name="Jardim da Estrela")
+
+    assert [post["location_name"] for post in logic.get_feed(post_db, ben)] == ["Jardim da Estrela"]
+
+
+@pytest.mark.parametrize("location", [None, "", "   ", "x" * 61])
+def test_post_without_venue_needs_a_valid_location(post_db, location):
+    anna = make_user(post_db, "anna")
+
+    result = logic.create_post(post_db, anna, None, "Hello", location_name=location)
+
+    assert not result.success
+    assert post_db.count_posts() == 0
+
+
+def test_venue_post_ignores_a_typed_location(post_db):
+    anna = make_user(post_db, "anna")
+    park = make_venue(post_db)
+
+    logic.create_post(post_db, anna, park, "At the bar", location_name="Somewhere else")
+
+    post = post_db.get_user_posts(anna["id"])[0]
+    assert post["venue_id"] == park
+    assert post["location_name"] is None
+
+
+def test_old_local_posts_table_is_upgraded_and_keeps_posts(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "_database_url", lambda: None)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "old.db")
+    db.init_db()
+    # Recreate the posts table in its old shape (venue required, no location column) with one post.
+    with db._connect() as connection:
+        connection.execute("DROP TABLE posts")
+        connection.execute("CREATE TABLE posts (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, "
+                           "venue_id INTEGER NOT NULL, text TEXT, image_id INTEGER, created_at TEXT NOT NULL)")
+        connection.execute("INSERT INTO posts (user_id, venue_id, text, created_at) VALUES (1, 1, 'old post', '2026-01-01')")
+    monkeypatch.setattr(db, "_initialized_key", None)
+
+    db.init_db()
+
+    with db._connect() as connection:
+        columns = {row[1]: row[3] for row in connection.execute("PRAGMA table_info(posts)").fetchall()}
+        texts = connection.execute("SELECT text FROM posts").fetchall()
+    assert columns["venue_id"] == 0
+    assert "location_name" in columns
+    assert texts == [("old post",)]

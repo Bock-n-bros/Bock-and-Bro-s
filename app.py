@@ -760,8 +760,12 @@ def show_post(user, post, key):
                     40, author_image_col)
         author_col.button(display_name(post), key=f"{key}-author-{post['id']}", type="tertiary",
                           icon=":material/person:", on_click=open_profile, args=(post["user_id"], user["id"]))
-        venue_col.button(post["venue_name"], key=f"{key}-venue-{post['id']}", type="tertiary",
-                         icon=":material/sports_bar:", on_click=open_venue, args=(post["venue_id"],))
+        if post["venue_id"] is not None:
+            venue_col.button(post["venue_name"], key=f"{key}-venue-{post['id']}", type="tertiary",
+                             icon=":material/sports_bar:", on_click=open_venue, args=(post["venue_id"],))
+        else:
+            # A typed-in "Other" location is shown as plain text: there is no venue page to open.
+            venue_col.markdown(f":material/location_on: {html.escape(post['location_name'] or '')}")
         if post["image_id"]:
             image_bytes = logic.get_app_post_image(post)
             if image_bytes is not None:
@@ -800,22 +804,33 @@ def show_post(user, post, key):
                 st.error(result.message)
 
 
+OTHER_LOCATION = "other"
+
+
 def show_post_form(user, key, venue_id=None):
     """Show the form for a new post; the venue is fixed on a venue page."""
+    other_location = None
+    if venue_id is None:
+        # Chosen outside the form so picking "Other" shows the location box straight away.
+        venues = {venue["id"]: venue["name"] for venue in logic.get_venues()}
+        venues[OTHER_LOCATION] = "Other – type your own location"
+        chosen_venue = st.selectbox("Bar or café", list(venues), index=None, key=f"{key}-post-venue",
+                                    format_func=venues.get, placeholder="Choose where you are")
+        if chosen_venue == OTHER_LOCATION:
+            other_location = st.text_input("Location", max_chars=logic.MAX_LOCATION_LENGTH,
+                                           key=f"{key}-post-location", placeholder="e.g. Miradouro da Graça")
+            chosen_venue = None
+    else:
+        chosen_venue = venue_id
     with st.form(f"{key}-post-form", clear_on_submit=True):
-        if venue_id is None:
-            venues = {venue["id"]: venue["name"] for venue in logic.get_venues()}
-            chosen_venue = st.selectbox("Bar or café", list(venues), index=None,
-                                        format_func=venues.get, placeholder="Choose where you are")
-        else:
-            chosen_venue = venue_id
         text = st.text_area("What's happening?", max_chars=logic.MAX_POST_LENGTH)
         photo = st.file_uploader("Photo (optional, JPG, PNG, iPhone HEIC or WEBP)", type=logic.IMAGE_TYPES)
         submitted = st.form_submit_button("Post", type="primary")
     if submitted:
         result = logic.create_app_post(user, chosen_venue, text,
                                        photo.getvalue() if photo else None,
-                                       photo.name if photo else None)
+                                       photo.name if photo else None,
+                                       location_name=other_location)
         if result.success:
             st.toast(result.message)
         else:

@@ -167,8 +167,8 @@ def _table_statements(backend):
         )""",
         f"""CREATE TABLE IF NOT EXISTS posts (
             id {identity}, user_id INTEGER NOT NULL REFERENCES users(id),
-            venue_id INTEGER NOT NULL REFERENCES venues(id), text TEXT, image_id INTEGER REFERENCES images(id),
-            created_at TEXT NOT NULL
+            venue_id INTEGER REFERENCES venues(id), location_name TEXT,
+            text TEXT, image_id INTEGER REFERENCES images(id), created_at TEXT NOT NULL
         )""",
         f"""CREATE TABLE IF NOT EXISTS comments (
             id {identity}, post_id INTEGER NOT NULL REFERENCES posts(id),
@@ -237,6 +237,7 @@ def init_db():
                 _execute(connection, backend, f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         _ensure_user_image_column(connection, backend)
         _ensure_email_notifications_column(connection, backend)
+        _ensure_post_location_column(connection, backend)
     _initialized_key = (backend, setting)
 
 
@@ -263,6 +264,32 @@ def _ensure_email_notifications_column(connection, backend):
     if "email_notifications" not in columns:
         _execute(connection, backend,
             "ALTER TABLE users ADD COLUMN email_notifications INTEGER NOT NULL DEFAULT 1 CHECK (email_notifications IN (0, 1))")
+
+
+def _ensure_post_location_column(connection, backend):
+    """Let posts made before custom locations existed have no venue and a free-text location."""
+    if backend == "sqlite":
+        info = _execute(connection, backend, "PRAGMA table_info(posts)").fetchall()
+        columns = {row[1]: row for row in info}
+        if "location_name" not in columns:
+            _execute(connection, backend, "ALTER TABLE posts ADD COLUMN location_name TEXT")
+        if columns["venue_id"][3]:
+            # SQLite cannot drop NOT NULL in place, so the table is copied into the new shape once.
+            _execute(connection, backend, """CREATE TABLE posts_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id),
+                venue_id INTEGER REFERENCES venues(id), location_name TEXT,
+                text TEXT, image_id INTEGER REFERENCES images(id), created_at TEXT NOT NULL)""")
+            _execute(connection, backend, "INSERT INTO posts_new (id, user_id, venue_id, location_name, text, image_id, created_at) "
+                     "SELECT id, user_id, venue_id, location_name, text, image_id, created_at FROM posts")
+            _execute(connection, backend, "DROP TABLE posts")
+            _execute(connection, backend, "ALTER TABLE posts_new RENAME TO posts")
+    else:
+        columns = {row[0] for row in _execute(connection, backend,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ?", ("posts",)).fetchall()}
+        if "location_name" not in columns:
+            _execute(connection, backend, "ALTER TABLE posts ADD COLUMN location_name TEXT")
+        _execute(connection, backend, "ALTER TABLE posts ALTER COLUMN venue_id DROP NOT NULL")
 
 
 def _insert(connection, backend, sql, parameters):
@@ -777,8 +804,8 @@ def count_venue_followers(venue_id):
 def _post_query(where, values, limit):
     """Fetch post metadata without loading image contents."""
     cursor = _query("SELECT p.id, p.user_id, u.username, u.role, u.image_id AS author_image_id, p.venue_id, v.name AS venue_name, "
-        "p.text, p.image_id, p.created_at FROM posts p JOIN users u ON u.id = p.user_id "
-        "JOIN venues v ON v.id = p.venue_id " + where + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?",
+        "p.location_name, p.text, p.image_id, p.created_at FROM posts p JOIN users u ON u.id = p.user_id "
+        "LEFT JOIN venues v ON v.id = p.venue_id " + where + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?",
         (*values, limit))
     return _rows(cursor)
 
@@ -832,7 +859,7 @@ def _prepare_image(data, mime_type, max_width=1200):
     return output.getvalue()
 
 
-def create_post(user_id, venue_id, text, image_bytes=None, image_name=None, now=None):
+def create_post(user_id, venue_id, text, image_bytes=None, image_name=None, now=None, location_name=None):
     """Save a post and its optional image in one transaction."""
     mime_type = _image_mime_type(image_name) if image_bytes is not None else None
     cooked = _prepare_image(image_bytes, mime_type) if image_bytes is not None else None
@@ -845,8 +872,8 @@ def create_post(user_id, venue_id, text, image_bytes=None, image_name=None, now=
                 "INSERT INTO images (bytes, mime_type, byte_size, created_at) VALUES (?, ?, ?, ?)",
                 (cooked, mime_type, len(cooked), timestamp))
         return _insert(connection, backend,
-            "INSERT INTO posts (user_id, venue_id, text, image_id, created_at) VALUES (?, ?, ?, ?, ?)",
-            (user_id, venue_id, text, image_id, timestamp))
+            "INSERT INTO posts (user_id, venue_id, text, image_id, created_at, location_name) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, venue_id, text, image_id, timestamp, location_name))
 
 
 def get_post_image(image_id):

@@ -440,3 +440,11 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** iPhones save photos as HEIC by default, and browsers cannot display HEIC; phone photos also store their rotation separately.
 - **Instead of:** asking users to convert photos themselves, or storing HEIC that most browsers cannot show.
 - **Where:** `db._prepare_image`, `db._image_mime_type`, `logic.IMAGE_TYPES`; new dependency `pillow-heif` (adds HEIC support to Pillow). Two older tests that required WEBP to be refused were changed.
+
+### D-063 · Posts can use a typed-in "Other" location instead of a venue
+*19 Nov 2026 · posts*
+
+- **What:** the venue list in the post form ends with "Other – type your own location"; such posts store `location_name` (max 60 characters, extra spaces removed) and no `venue_id`. They show in feeds and on profiles, with a pin icon instead of a link, but not on any venue page.
+- **Why:** people also meet at viewpoints, parks or private places that are not in the venue list.
+- **Instead of:** letting users add new venues, which would need moderation.
+- **Where:** `posts.location_name`, nullable `posts.venue_id`, `logic.create_post`, `app.show_post_form`, `app.show_post`. Existing databases are upgraded at startup (Postgres drops NOT NULL; local SQLite copies the posts table once). One test now only checks the row-level-security statements, since startup also runs this upgrade.

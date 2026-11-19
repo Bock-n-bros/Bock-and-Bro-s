@@ -92,7 +92,7 @@ def test_postgres_initialization_enables_rls_on_every_table(monkeypatch):
     monkeypatch.setattr(db, "_backend", lambda: ("postgres", "postgresql://fake"))
     monkeypatch.setattr(db, "_ensure_connection", lambda *_: connection)
     db.init_db()
-    enabled = [sql for sql in calls if sql.startswith("ALTER TABLE")]
+    enabled = [sql for sql in calls if sql.startswith("ALTER TABLE") and "ROW LEVEL SECURITY" in sql]
     assert enabled == [f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" for table in (
         "images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
         "conversations", "conversation_members", "messages", "events", "event_responses", "notifications")]

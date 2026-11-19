@@ -409,3 +409,11 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** missing screen helpers fail in pytest instead of appearing only when a user opens the screen.
 - **Instead of:** relying on a manual app launch to find broken screen-to-logic references.
 - **Where:** `tests/test_app_logic_references.py`.
+
+### D-059 · Map and venue list read all review summaries in one query
+*19 Nov 2026 · Supabase performance*
+
+- **What:** `db.get_all_review_summaries()` reads every review once and builds the summary per venue in Python; the map, the venue list and sorting use it.
+- **Why:** one query per venue (two on the map) meant 40–60 network round trips per page on Supabase.
+- **Instead of:** calling `get_review_summary` and `get_reviews_for_venue` in a loop over venues.
+- **Where:** `db.get_all_review_summaries`, `logic.get_review_summaries`, `logic.sort_venues`, `app.py` map and venue list.

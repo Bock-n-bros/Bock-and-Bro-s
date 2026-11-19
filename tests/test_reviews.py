@@ -306,3 +306,24 @@ def test_sort_applies_after_filters(review_db):
     review_db.save_review(high, user_id, review(atmosphere=5, value=5, quality=5))
     results = logic.find_venues(review_db, venue_type="bar", sort_by="overall")
     assert [venue["name"] for venue in results] == ["Zulu Bar", "Alpha Bar"]
+
+
+def test_all_review_summaries_match_per_venue_summaries(review_db):
+    """The one-query summaries used by the map and lists equal the per-venue summaries."""
+    park = make_venue(review_db, "Park")
+    quiet = make_venue(review_db, "Quiet")
+    make_venue(review_db, "Empty")
+    for index, (venue, scores, price) in enumerate([
+        (park, (5, 4, 3), 2.5), (park, (3, 3, 4), 1.8), (quiet, (2, 5, 5), None),
+    ]):
+        user = {"id": make_user(review_db, f"reviewer{index}"), "role": "customer"}
+        result = logic.submit_review(review_db, user, venue, *scores, super_bock_price=price)
+        assert result.success
+
+    summaries = logic.get_review_summaries(review_db)
+
+    for venue in review_db.get_all_venues():
+        batch = {key: value for key, value in summaries[venue["id"]].items() if key != "lowest_super_bock_price"}
+        assert batch == review_db.get_review_summary(venue["id"])
+    assert summaries[park]["lowest_super_bock_price"] == 1.8
+    assert summaries[quiet]["lowest_super_bock_price"] is None

@@ -301,6 +301,18 @@ def get_venue_review_summary(venue_id):
     return db.get_review_summary(venue_id)
 
 
+def get_review_summaries(database):
+    """Return {venue_id: summary} for all venues; venues without reviews get an empty summary."""
+    summaries = database.get_all_review_summaries()
+    empty = {**database.summarize_reviews([]), "lowest_super_bock_price": None}
+    return {venue["id"]: summaries.get(venue["id"], dict(empty)) for venue in database.get_all_venues()}
+
+
+def get_all_venue_review_summaries():
+    """Fetch every venue's review summary in one database round trip (for lists and the map)."""
+    return get_review_summaries(db)
+
+
 def get_customer_review(user_id, venue_id):
     """Fetch the current customer's review for a venue."""
     return db.get_user_review(user_id, venue_id)
@@ -518,7 +530,10 @@ def sort_venues(venues, database, sort_by="name"):
         sort_by = "name"
     if sort_by == "name":
         return sorted(venues, key=lambda venue: venue["name"].casefold())
-    summaries = {venue["id"]: database.get_review_summary(venue["id"]) for venue in venues}
+    # One query for all venues instead of one per venue (matters on Supabase).
+    all_summaries = database.get_all_review_summaries()
+    empty = database.summarize_reviews([])
+    summaries = {venue["id"]: all_summaries.get(venue["id"], empty) for venue in venues}
     key_name = {"overall": "overall", "atmosphere": "atmosphere", "price": "average_super_bock_price",
                 "reviews": "review_count"}[sort_by]
     def ordering(venue):

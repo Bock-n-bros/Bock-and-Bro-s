@@ -375,14 +375,41 @@ def count_reviews(venue_id=None):
         return _execute(connection, backend, "SELECT COUNT(*) FROM reviews WHERE venue_id = ?", (venue_id,)).fetchone()[0]
 
 
-def get_review_summary(venue_id):
-    """Calculate category, overall, price, and count summary values."""
-    rows = get_reviews_for_venue(venue_id)
+def summarize_reviews(rows):
+    """Calculate category, overall, price, and count summary values from review rows."""
     if not rows:
-        return {"atmosphere": None, "value": None, "quality": None, "overall": None, "review_count": 0, "average_super_bock_price": None}
+        return {"atmosphere": None, "value": None, "quality": None, "overall": None, "review_count": 0,
+                "average_super_bock_price": None}
     means = {key: sum(row[key] for row in rows) / len(rows) for key in ("atmosphere", "value", "quality")}
     prices = [row["super_bock_price"] for row in rows if row["super_bock_price"] is not None]
-    return {"atmosphere": round(means["atmosphere"], 1), "value": round(means["value"], 1), "quality": round(means["quality"], 1), "overall": round(sum(means.values()) / 3, 1), "review_count": len(rows), "average_super_bock_price": round(sum(prices) / len(prices), 2) if prices else None}
+    return {"atmosphere": round(means["atmosphere"], 1), "value": round(means["value"], 1), "quality": round(means["quality"], 1),
+            "overall": round(sum(means.values()) / 3, 1), "review_count": len(rows),
+            "average_super_bock_price": round(sum(prices) / len(prices), 2) if prices else None}
+
+
+def get_review_summary(venue_id):
+    """Calculate category, overall, price, and count summary values."""
+    return summarize_reviews(get_reviews_for_venue(venue_id))
+
+
+def get_all_review_summaries():
+    """Return {venue_id: summary} for every reviewed venue using a single query."""
+    init_db()
+    backend, _ = _backend()
+    with _connect() as connection:
+        cursor = _execute(connection, backend,
+                          "SELECT venue_id, atmosphere, value, quality, super_bock_price FROM reviews")
+        rows = cursor.fetchall()
+    by_venue = {}
+    for venue_id, atmosphere, value, quality, price in rows:
+        by_venue.setdefault(venue_id, []).append(
+            {"atmosphere": atmosphere, "value": value, "quality": quality, "super_bock_price": price})
+    summaries = {}
+    for venue_id, venue_rows in by_venue.items():
+        prices = [row["super_bock_price"] for row in venue_rows if row["super_bock_price"] is not None]
+        # The map shows the cheapest reported price, so it is added here as an extra field.
+        summaries[venue_id] = {**summarize_reviews(venue_rows), "lowest_super_bock_price": min(prices) if prices else None}
+    return summaries
 
 
 def _iso_timestamp(now):

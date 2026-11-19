@@ -253,16 +253,14 @@ def render_map(venues, user):
         mapbox_token = None
 
     map_rows = []
+    summaries = logic.get_all_venue_review_summaries()
     for venue in venues:
-        summary = logic.get_venue_review_summary(venue["id"])
+        summary = summaries[venue["id"]]
         if minimum_rating != "All":
             threshold = float(minimum_rating[:-1])
             if summary["overall"] is None or summary["overall"] < threshold:
                 continue
-        reviews = logic.get_venue_reviews(venue["id"])
-        prices = [review["super_bock_price"] for review in reviews
-                  if review["super_bock_price"] is not None]
-        price = min(prices) if prices else summary["average_super_bock_price"]
+        price = summary["lowest_super_bock_price"]
         pin_label = logic.price_label(price, summary["overall"])
         taste_label = f"{summary['quality']:.1f}" if summary["quality"] is not None else "no reviews"
         vibe_label = f"{summary['atmosphere']:.1f}" if summary["atmosphere"] is not None else "no reviews"
@@ -935,10 +933,11 @@ if logic.can_view_venues(user):
                 )
                 if not matches:
                     st.write("No venues match your filters.")
+                summaries = logic.get_all_venue_review_summaries()
                 for venue in matches:
                     name_col, area_col, type_col, button_col = st.columns([3, 2, 2, 1])
                     name_col.write(venue["name"])
-                    summary = logic.get_venue_review_summary(venue["id"])
+                    summary = summaries[venue["id"]]
                     name_col.write(f"{summary['overall']:.1f} ★ · {summary['review_count']} reviews" if summary["review_count"] else "No reviews yet")
                     area_col.write(venue["neighbourhood"])
                     type_col.write(venue["venue_type"])

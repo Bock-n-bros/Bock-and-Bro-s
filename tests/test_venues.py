@@ -108,19 +108,20 @@ def test_rejects_coordinates_just_outside_lisbon_limits(venue_db, tmp_path, fiel
     assert logic.load_venues(venue_db, csv_path) == 0
 
 
-def test_loads_missing_rows_into_database_with_existing_venues(venue_db, tmp_path):
-    existing_id = venue_db.insert_venue(venue())
-    csv_path = write_csv(tmp_path / "venues.csv", [venue("Demo Super Bar"), venue("Demo Second")])
-    assert logic.load_venues(venue_db, csv_path) == 1
-    assert venue_db.count_venues() == 2
-    assert venue_db.get_venue_by_id(existing_id)["name"] == "Demo Super Bar"
+def test_nonempty_database_skips_all_csv_rows(venue_db, tmp_path):
+    existing_id = venue_db.insert_venue(venue("Existing Venue"))
+    csv_path = write_csv(tmp_path / "venues.csv", [venue("New Bar"), venue("New Pub")])
+
+    assert logic.load_venues(venue_db, csv_path) == 0
+    assert venue_db.count_venues() == 1
+    assert venue_db.get_venue_by_id(existing_id)["name"] == "Existing Venue"
 
 
-def test_skips_venue_names_that_match_case_insensitively(venue_db, tmp_path):
+def test_nonempty_database_skips_case_variants_and_other_rows(venue_db, tmp_path):
     existing_id = venue_db.insert_venue(venue("Pensão Amor"))
     csv_path = write_csv(tmp_path / "venues.csv", [venue("PENSÃO AMOR"), venue("New Bar")])
-    assert logic.load_venues(venue_db, csv_path) == 1
-    assert venue_db.count_venues() == 2
+    assert logic.load_venues(venue_db, csv_path) == 0
+    assert venue_db.count_venues() == 1
     assert venue_db.get_venue_by_id(existing_id)["name"] == "Pensão Amor"
 
 
@@ -136,10 +137,11 @@ def test_seeding_preserves_reviews_for_existing_venue(venue_db, tmp_path):
     venue_db.save_review(venue_id, user_id, values, now="2026-11-18T12:00:00+00:00")
     csv_path = write_csv(tmp_path / "venues.csv", [venue("PENSÃO AMOR"), venue("New Bar")])
 
-    assert logic.load_venues(venue_db, csv_path) == 1
+    assert logic.load_venues(venue_db, csv_path) == 0
     review = venue_db.get_user_review(user_id, venue_id)
     assert review["comment"] == "Keep this review"
     assert venue_db.count_reviews(venue_id) == 1
+    assert venue_db.count_venues() == 1
 
 
 def test_seed_csv_contains_more_lisbon_venues():

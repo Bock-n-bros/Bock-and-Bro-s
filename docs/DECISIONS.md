@@ -425,3 +425,10 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** gives the app a recognisable Lisbon beer-bar look inspired by Super Bock colours, mostly through Streamlit's built-in theme so little custom CSS is needed.
 - **Instead of:** Super Bock's own logo or label, which is their trademark; the logo and bottles are our own drawings.
 - **Where:** `.streamlit/config.toml`, `styles.py`, `app.py` (top), `static/`.
+
+### D-061 · Venue seeding runs only for an empty venues table
+
+- **What:** CSV venues are inserted only when the database has no venue rows.
+- **Why:** old app versions re-seeded missing rows into the shared Supabase database after it was already populated.
+- **Instead of:** filling in missing CSV names on every startup.
+- **Where:** `logic.load_venues`, `seed.py` and `specs/02-venues.md`.

@@ -2,6 +2,7 @@
 
 import html
 from datetime import date, datetime, time
+from pathlib import Path
 
 import streamlit as st
 import pydeck as pdk
@@ -11,6 +12,9 @@ import logic
 import styles
 import weather
 
+st.set_page_config(page_title="Bock'n Bros", page_icon="🍺")
+st.markdown(styles.THEME_CSS, unsafe_allow_html=True)
+st.logo(str(Path(__file__).resolve().parent / "static" / "logo.svg"), size="large")
 
 try:
     logic.initialize_app_data()

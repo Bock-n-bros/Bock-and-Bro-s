@@ -462,3 +462,38 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** a direct row-building test catches color-shape mismatches before the map renders.
 - **Instead of:** creating rows inline in the Streamlit screen, where the conversion is harder to test.
 - **Where:** `logic.py`, `app.render_map` and `tests/test_map.py`.
+
+### D-066 · Main sections use Streamlit top navigation — Replaced by D-070
+
+- **What:** Feed, Venues, People, Messages and Profile are registered as icon pages with `st.navigation(position="top")`; the sidebar holds account details and logout.
+- **Why:** the same five destinations stay visible as a clear app menu while account controls remain easy to find.
+- **Instead of:** switching screens through a sidebar radio control.
+- **Where:** `app.py` `NAV_PAGES` and the navigation shell.
+
+### D-067 · Detail navigation uses URL IDs and a session history stack
+
+- **What:** venue, profile, post and chat detail IDs live in query parameters; a session stack stores the source page and query state for Back.
+- **Why:** shared URLs, refresh and browser history retain the selected detail while Back can restore the original list or previous detail.
+- **Instead of:** session-only selected IDs and a fixed return destination.
+- **Where:** `logic.build_detail_query`, `logic.parse_detail_id`, `app.open_detail`, detail routes and `tests/test_navigation.py`.
+
+### D-068 · Venue and profile links share URL builders
+
+- **What:** venue and profile links use shared query helpers with a lowercase source value; post headers render these URLs as inline text links.
+- **Why:** names remain readable links and every route carries the same detail ID and return source.
+- **Instead of:** separate button callbacks and URL formats in feed, reviews, comments and messages.
+- **Where:** `logic.venue_link_params`, `logic.profile_link_params`, `app.detail_text_link` and `app.show_post`.
+
+### D-069 · Map pins open a preview before venue details
+
+- **What:** selecting a pin stores its ID for a compact preview; only “View bar” opens the venue URL, and the preview ID stays in session state for Back.
+- **Why:** map exploration does not navigate away and returning restores the selected venue context.
+- **Instead of:** opening a full venue card immediately when a pin is selected.
+- **Where:** `logic.map_preview_selection`, `app.render_map`, `app.render_venue_card` and `tests/test_navigation.py`.
+
+### D-070 · Main sections use Streamlit sidebar navigation
+
+- **What:** the five icon pages appear in the sidebar after the account identity; the logo comes first and logout stays at the bottom.
+- **Why:** the app keeps its familiar left-side navigation and the account controls remain grouped above the page list.
+- **Instead of:** top navigation and red styling on Streamlit's header.
+- **Where:** `app.py` navigation shell, `styles.py` and `tests/test_navigation.py`.

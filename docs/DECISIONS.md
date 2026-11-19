@@ -432,3 +432,11 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** old app versions re-seeded missing rows into the shared Supabase database after it was already populated.
 - **Instead of:** filling in missing CSV names on every startup.
 - **Where:** `logic.load_venues`, `seed.py` and `specs/02-venues.md`.
+
+### D-062 · iPhone (HEIC) and WEBP photos are accepted and converted to JPEG
+*19 Nov 2026 · posts and profile pictures*
+
+- **What:** uploads may be JPG, PNG, HEIC/HEIF or WEBP; HEIC and WEBP are converted to JPEG, and every photo is turned upright using its EXIF orientation. The 5 MB limit and the content check (the file must really be that image type) stay.
+- **Why:** iPhones save photos as HEIC by default, and browsers cannot display HEIC; phone photos also store their rotation separately.
+- **Instead of:** asking users to convert photos themselves, or storing HEIC that most browsers cannot show.
+- **Where:** `db._prepare_image`, `db._image_mime_type`, `logic.IMAGE_TYPES`; new dependency `pillow-heif` (adds HEIC support to Pillow). Two older tests that required WEBP to be refused were changed.

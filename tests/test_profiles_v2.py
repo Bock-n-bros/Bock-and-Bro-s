@@ -96,7 +96,7 @@ def test_profile_picture_at_five_megabytes_is_accepted(profile_db):
     assert profile_db.get_profile_image_id(anna["id"]) is not None
 
 
-@pytest.mark.parametrize("format_name", ["GIF", "WEBP"])
+@pytest.mark.parametrize("format_name", ["GIF"])
 def test_profile_picture_rejects_unsupported_types(profile_db, format_name):
     anna = make_user(profile_db, "anna")
 
@@ -146,3 +146,15 @@ def test_business_badge_is_textual_and_only_for_business_accounts():
     assert 'person["role"] == "business"' in source
     assert '"Bar"' in source
     assert 'caption("Bar")' in source
+
+
+@pytest.mark.parametrize(("format_name", "file_name"), [("HEIF", "IMG_1234.HEIC"), ("WEBP", "avatar.webp")])
+def test_profile_picture_accepts_iphone_heic_and_webp_as_jpeg(profile_db, format_name, file_name):
+    anna = make_user(profile_db, "anna")
+
+    result = logic.set_profile_picture(profile_db, anna, make_image(format_name, size=(500, 500)), file_name)
+
+    avatar = logic.get_profile_avatar(profile_db, logic.get_profile(profile_db, anna, anna["id"]))
+    assert result.success
+    assert avatar["mime_type"] == "image/jpeg"
+    assert Image.open(BytesIO(avatar["bytes"])).width == 400

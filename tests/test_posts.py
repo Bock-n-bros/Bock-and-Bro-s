@@ -73,7 +73,7 @@ def test_customer_and_bar_owner_can_post_with_photo(post_db):
     assert fetched["bytes"]
 
 
-def test_text_only_and_photo_only_posts_work_but_webp_is_refused(post_db):
+def test_text_only_and_photo_only_posts_work_and_webp_is_accepted(post_db):
     anna = make_user(post_db, "anna")
     park = make_venue(post_db)
 
@@ -82,9 +82,9 @@ def test_text_only_and_photo_only_posts_work_but_webp_is_refused(post_db):
     assert text_result.success
     assert photo_result.success
     assert post_db.get_user_posts(anna["id"])[1]["image_id"] is None
-    rejected_webp = logic.create_post(post_db, anna, park, "", image_bytes("WEBP"), "pic.webp")
-    assert not rejected_webp.success
-    assert post_db.count_posts() == 2
+    webp_result = logic.create_post(post_db, anna, park, "", image_bytes("WEBP"), "pic.webp")
+    assert webp_result.success
+    assert post_db.count_posts() == 3
 
 
 @pytest.mark.parametrize(
@@ -242,3 +242,42 @@ def test_image_lookup_cannot_leave_the_uploads_folder(post_db):
 
 def test_post_time_is_shown_in_lisbon_time():
     assert logic.format_post_time("2026-07-18T20:30:00+00:00") == "18 Jul 2026, 21:30"
+
+
+def test_iphone_heic_photo_is_accepted_and_stored_as_jpeg(post_db):
+    anna = make_user(post_db, "anna")
+    park = make_venue(post_db)
+    heic = image_bytes("HEIF", size=(1600, 1200))
+
+    result = logic.create_post(post_db, anna, park, "From my iPhone", heic, "IMG_1234.HEIC")
+
+    assert result.success
+    stored = post_db.get_post_image(post_db.get_user_posts(anna["id"])[0]["image_id"])
+    assert stored["mime_type"] == "image/jpeg"
+    image = Image.open(BytesIO(stored["bytes"]))
+    assert image.format == "JPEG"
+    assert image.width == 1200
+
+
+def test_phone_photo_is_rotated_using_its_exif_orientation(post_db):
+    anna = make_user(post_db, "anna")
+    park = make_venue(post_db)
+    buffer = BytesIO()
+    exif = Image.Exif()
+    exif[0x0112] = 6  # "rotate 90 degrees": how phones mark portrait photos
+    Image.new("RGB", (40, 20), (200, 120, 30)).save(buffer, format="JPEG", exif=exif)
+
+    assert logic.create_post(post_db, anna, park, "portrait", buffer.getvalue(), "IMG_0001.JPG").success
+
+    stored = post_db.get_post_image(post_db.get_user_posts(anna["id"])[0]["image_id"])
+    assert Image.open(BytesIO(stored["bytes"])).size == (20, 40)
+
+
+def test_renamed_file_with_heic_extension_is_refused(post_db):
+    anna = make_user(post_db, "anna")
+    park = make_venue(post_db)
+
+    result = logic.create_post(post_db, anna, park, "fake", b"not an image at all", "IMG_9999.HEIC")
+
+    assert not result.success
+    assert post_db.count_images() == 0

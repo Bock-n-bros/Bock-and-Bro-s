@@ -6,7 +6,11 @@ from io import BytesIO
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
+from pillow_heif import register_heif_opener
+
+# Lets Pillow open HEIC/HEIF, the default photo format on iPhones.
+register_heif_opener()
 
 DB_PATH = Path(__file__).resolve().parent / "bocknbros.db"
 DATABASE_UNAVAILABLE_MESSAGE = "Bock'n Bros can't reach the database right now. Please try again in a few minutes."
@@ -779,25 +783,46 @@ def _post_query(where, values, limit):
     return _rows(cursor)
 
 
+# File extension -> stored MIME type. iPhone (HEIC/HEIF) and WEBP photos are converted to JPEG,
+# because browsers cannot show HEIC and JPEG keeps the stored photos small.
+_IMAGE_MIME_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                     ".heic": "image/jpeg", ".heif": "image/jpeg", ".webp": "image/jpeg"}
+# Stored MIME type -> image formats (as detected by Pillow from the file content) that may be saved as it.
+# MPO is the multi-picture JPEG variant some phone cameras write.
+_ALLOWED_SOURCE_FORMATS = {"image/jpeg": {"JPEG", "MPO", "HEIF", "WEBP"}, "image/png": {"PNG"}}
+
+
+def _image_mime_type(image_name):
+    """Return the stored MIME type for an uploaded file name, or None if the type is not allowed."""
+    return _IMAGE_MIME_TYPES.get(Path(image_name or "").suffix.casefold())
+
+
 def _prepare_image(data, mime_type, max_width=1200):
-    """Validate, resize and compress JPEG or PNG input."""
+    """Validate, rotate, resize and compress an uploaded photo into JPEG or PNG."""
     if len(data) > 5 * 1024 * 1024:
         raise ValueError("Photos can be at most 5 MB.")
-    if mime_type not in {"image/jpeg", "image/png"}:
-        raise ValueError("Photos must be JPG or PNG.")
+    if mime_type not in _ALLOWED_SOURCE_FORMATS:
+        raise ValueError("Photos must be JPG, PNG, HEIC (iPhone) or WEBP.")
     try:
         image = Image.open(BytesIO(data))
-        expected = "JPEG" if mime_type == "image/jpeg" else "PNG"
-        if image.format != expected:
+        if image.format not in _ALLOWED_SOURCE_FORMATS[mime_type]:
             raise ValueError("That file is not a valid image.")
         image.load()
+        # Phones store "which way is up" in EXIF; apply it so portrait photos are not shown sideways.
+        image = ImageOps.exif_transpose(image)
     except (OSError, Image.DecompressionBombError):
         raise ValueError("That file is not a valid image.") from None
     if image.width > max_width:
         image = image.resize((max_width, round(image.height * max_width / image.width)), Image.Resampling.LANCZOS)
     output = BytesIO()
     if mime_type == "image/jpeg":
-        if image.mode not in ("RGB", "L"):
+        if image.mode in ("RGBA", "LA", "P"):
+            # JPEG has no transparency: put transparent photos on a white background.
+            image = image.convert("RGBA")
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            background.paste(image, mask=image.split()[-1])
+            image = background
+        elif image.mode not in ("RGB", "L"):
             image = image.convert("RGB")
         image.save(output, format="JPEG", optimize=True, quality=85)
     else:
@@ -809,8 +834,7 @@ def _prepare_image(data, mime_type, max_width=1200):
 
 def create_post(user_id, venue_id, text, image_bytes=None, image_name=None, now=None):
     """Save a post and its optional image in one transaction."""
-    image_extension = Path(image_name or "").suffix.casefold() if image_bytes is not None else None
-    mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}.get(image_extension)
+    mime_type = _image_mime_type(image_name) if image_bytes is not None else None
     cooked = _prepare_image(image_bytes, mime_type) if image_bytes is not None else None
     backend, _ = _backend()
     timestamp = _iso_timestamp(now)
@@ -846,8 +870,7 @@ def get_profile_image_id(user_id):
 
 def set_profile_image(user_id, data, image_name, now=None):
     """Store a resized profile picture and replace the user's current image."""
-    extension = Path(image_name or "").suffix.casefold()
-    mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}.get(extension)
+    mime_type = _image_mime_type(image_name)
     cooked = _prepare_image(data, mime_type, max_width=400)
     backend, _ = _backend()
     timestamp = _iso_timestamp(now)

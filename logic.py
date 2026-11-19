@@ -230,7 +230,7 @@ class NotificationResult:
 
 
 MAX_POST_LENGTH = 500
-IMAGE_TYPES = ["jpg", "jpeg", "png"]
+IMAGE_TYPES = ["jpg", "jpeg", "png", "heic", "heif", "webp"]
 MAX_MESSAGE_LENGTH = 1000
 MAX_GROUP_NAME_LENGTH = 50
 MAX_GROUP_MEMBERS = 20

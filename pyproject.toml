@@ -8,6 +8,7 @@ dependencies = [
     "pydeck",
     "streamlit[auth]",
     "psycopg[binary]>=3.3.8",
+    "pillow-heif>=1.8.1",
 ]
 
 [dependency-groups]

@@ -672,7 +672,7 @@ def show_profile(user, profile_id):
 
     if profile["is_me"]:
         with st.form("profile-picture-form", clear_on_submit=True):
-            picture = st.file_uploader("Profile picture (JPEG or PNG)", type=logic.IMAGE_TYPES)
+            picture = st.file_uploader("Profile picture (JPG, PNG, iPhone HEIC or WEBP)", type=logic.IMAGE_TYPES)
             save_picture = st.form_submit_button("Save picture")
         if save_picture:
             if picture is None:
@@ -810,7 +810,7 @@ def show_post_form(user, key, venue_id=None):
         else:
             chosen_venue = venue_id
         text = st.text_area("What's happening?", max_chars=logic.MAX_POST_LENGTH)
-        photo = st.file_uploader("Photo (optional)", type=logic.IMAGE_TYPES)
+        photo = st.file_uploader("Photo (optional, JPG, PNG, iPhone HEIC or WEBP)", type=logic.IMAGE_TYPES)
         submitted = st.form_submit_button("Post", type="primary")
     if submitted:
         result = logic.create_app_post(user, chosen_venue, text,

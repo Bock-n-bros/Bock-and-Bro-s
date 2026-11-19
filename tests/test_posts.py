@@ -346,3 +346,226 @@ def test_old_local_posts_table_is_upgraded_and_keeps_posts(tmp_path, monkeypatch
     assert columns["venue_id"] == 0
     assert "location_name" in columns
     assert texts == [("old post",)]
+
+
+def test_author_can_delete_their_own_post(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "Pulling the plug").post_id
+
+    result = logic.delete_post(post_db, writer, post_id)
+
+    assert result.success
+    assert post_db.get_post_details(post_id) == []
+    assert post_db.count_posts() == 0
+
+
+def test_another_user_cannot_delete_someone_elses_post(post_db):
+    writer = make_user(post_db, "writer")
+    stranger = make_user(post_db, "stranger")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "Not yours").post_id
+
+    result = logic.delete_post(post_db, stranger, post_id)
+
+    assert not result.success
+    assert "your own" in result.message
+    assert post_db.count_posts() == 1
+
+
+def test_logged_out_user_cannot_delete_a_post(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "Still here").post_id
+
+    result = logic.delete_post(post_db, None, post_id)
+
+    assert not result.success
+    assert post_db.count_posts() == 1
+
+
+def test_deleting_an_unknown_post_is_refused(post_db):
+    writer = make_user(post_db, "writer")
+
+    result = logic.delete_post(post_db, writer, 999)
+
+    assert not result.success
+    assert "could not be found" in result.message
+
+
+def test_deleting_a_post_removes_its_comments_and_likes(post_db):
+    writer = make_user(post_db, "writer")
+    reader = make_user(post_db, "reader")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "Say something").post_id
+    logic.add_comment(post_db, reader, post_id, "Nice one")
+    logic.toggle_like(post_db, reader, post_id)
+    assert post_db.count_comments(post_id) == 1
+    assert post_db.count_likes(post_id) == 1
+
+    assert logic.delete_post(post_db, writer, post_id).success
+
+    assert post_db.count_comments(post_id) == 0
+    assert post_db.count_likes(post_id) == 0
+
+
+def test_deleting_a_post_removes_its_photo(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "With a photo",
+                                image_bytes=PNG, image_name="beer.png").post_id
+    assert post_db.count_images() == 1
+
+    assert logic.delete_post(post_db, writer, post_id).success
+
+    assert post_db.count_images() == 0
+
+
+def test_deleting_a_post_keeps_a_profile_picture_using_the_same_image(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    logic.set_profile_picture(post_db, writer, PNG, "me.png")
+    post_id = logic.create_post(post_db, writer, venue_id, "Separate photo",
+                                image_bytes=JPG, image_name="beer.jpg").post_id
+
+    assert logic.delete_post(post_db, writer, post_id).success
+
+    assert post_db.get_profile_image_id(writer["id"]) is not None
+
+
+def test_deleting_one_post_leaves_other_posts_alone(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    keep_id = logic.create_post(post_db, writer, venue_id, "Keep me").post_id
+    drop_id = logic.create_post(post_db, writer, venue_id, "Drop me").post_id
+
+    assert logic.delete_post(post_db, writer, drop_id).success
+
+    assert [post["id"] for post in post_db.get_user_posts(writer["id"])] == [keep_id]
+
+
+def photo_ids(database, post_id):
+    """Return a post's photo ids in order."""
+    return database.get_post_image_ids(post_id)
+
+
+def test_a_post_can_hold_several_photos_in_upload_order(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+
+    result = logic.create_post(post_db, writer, venue_id, "Three of us",
+                               images=[(PNG, "one.png"), (JPG, "two.jpg"), (PNG, "three.PNG")])
+
+    assert result.success
+    assert len(photo_ids(post_db, result.post_id)) == 3
+    assert post_db.count_images() == 3
+
+
+def test_the_first_photo_becomes_the_cover(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+
+    post_id = logic.create_post(post_db, writer, venue_id, "Cover",
+                                images=[(PNG, "first.png"), (JPG, "second.jpg")]).post_id
+
+    assert post_db.get_post_details(post_id)[0]["image_id"] == photo_ids(post_db, post_id)[0]
+
+
+def test_more_than_the_maximum_number_of_photos_is_refused(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    too_many = [(PNG, f"photo-{number}.png") for number in range(logic.MAX_POST_PHOTOS + 1)]
+
+    result = logic.create_post(post_db, writer, venue_id, "Too many", images=too_many)
+
+    assert not result.success
+    assert str(logic.MAX_POST_PHOTOS) in result.message
+    assert post_db.count_posts() == 0
+    assert post_db.count_images() == 0
+
+
+def test_the_maximum_number_of_photos_is_allowed(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    allowed = [(PNG, f"photo-{number}.png") for number in range(logic.MAX_POST_PHOTOS)]
+
+    result = logic.create_post(post_db, writer, venue_id, "Just enough", images=allowed)
+
+    assert result.success
+    assert len(photo_ids(post_db, result.post_id)) == logic.MAX_POST_PHOTOS
+
+
+def test_one_bad_photo_refuses_the_whole_post_and_saves_nothing(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+
+    result = logic.create_post(post_db, writer, venue_id, "One is broken",
+                               images=[(PNG, "good.png"), (b"not an image", "bad.png")])
+
+    assert not result.success
+    assert post_db.count_posts() == 0
+    assert post_db.count_images() == 0
+
+
+def test_a_single_photo_post_still_works_the_old_way(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+
+    post_id = logic.create_post(post_db, writer, venue_id, "Just one", PNG, "one.png").post_id
+
+    assert photo_ids(post_db, post_id) == [post_db.get_post_details(post_id)[0]["image_id"]]
+    assert post_db.count_images() == 1
+
+
+def test_feed_posts_carry_their_photo_ids(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    logic.create_post(post_db, writer, venue_id, "Two photos",
+                      images=[(PNG, "a.png"), (JPG, "b.jpg")])
+
+    feed = logic.get_feed(post_db, writer)
+
+    assert len(feed[0]["image_ids"]) == 2
+    assert logic.get_app_post_photos(feed[0]) == feed[0]["image_ids"]
+
+
+def test_a_post_saved_before_this_feature_keeps_its_photo(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "Old post", PNG, "old.png").post_id
+    # Undo the join rows, leaving the row shape an earlier version of the app wrote.
+    post_db._query("DELETE FROM post_images WHERE post_id = ?", (post_id,))
+    assert photo_ids(post_db, post_id) == []
+
+    post_db._initialized_key = None
+    post_db.init_db()
+
+    assert len(photo_ids(post_db, post_id)) == 1
+
+
+def test_running_the_backfill_twice_does_not_duplicate_photos(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "Once only", PNG, "one.png").post_id
+
+    post_db._initialized_key = None
+    post_db.init_db()
+
+    assert len(photo_ids(post_db, post_id)) == 1
+
+
+def test_deleting_a_post_removes_all_of_its_photos(post_db):
+    writer = make_user(post_db, "writer")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "Three photos",
+                                images=[(PNG, "a.png"), (JPG, "b.jpg"), (PNG, "c.png")]).post_id
+    assert post_db.count_images() == 3
+
+    assert logic.delete_post(post_db, writer, post_id).success
+
+    assert post_db.count_images() == 0
+    assert photo_ids(post_db, post_id) == []
+
+
+def test_post_images_is_covered_by_row_level_security(post_db):
+    assert "post_images" in post_db._rls_table_names()

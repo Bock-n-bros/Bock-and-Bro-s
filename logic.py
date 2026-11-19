@@ -222,6 +222,15 @@ class PostResult:
 
 
 @dataclass
+class VenueAdminResult:
+    """Describe the outcome of a bar owner managing their venue."""
+
+    success: bool
+    message: str
+    item_id: int | None = None
+
+
+@dataclass
 class CommentResult:
     """Describe the outcome of adding or deleting a comment."""
 
@@ -259,6 +268,13 @@ class NotificationResult:
 MAX_POST_LENGTH = 500
 MAX_LOCATION_LENGTH = 60
 IMAGE_TYPES = ["jpg", "jpeg", "png", "heic", "heif", "webp"]
+MAX_POST_PHOTOS = 4
+MAX_MENU_ITEMS = 60
+MAX_MENU_NAME_LENGTH = 60
+MIN_MENU_PRICE = 0.10
+MAX_MENU_PRICE = 500.00
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                 "Saturday", "Sunday")
 MAX_MESSAGE_LENGTH = 1000
 MAX_GROUP_NAME_LENGTH = 50
 MAX_GROUP_MEMBERS = 20
@@ -1263,8 +1279,12 @@ def get_app_venue_follow_status(user, venue_id):
 
 
 def create_post(database, user, venue_id, text, image_bytes=None, image_name=None, now=None,
-                location_name=None):
-    """Check permission and input, then save a post tied to a venue or to a typed-in location."""
+                location_name=None, images=None):
+    """Check permission and input, then save a post tied to a venue or a typed-in location.
+
+    `images` is a list of (bytes, filename) pairs for a post with several photos.
+    `image_bytes` and `image_name` are the single-photo form used by earlier callers.
+    """
     if not _is_logged_in(user):
         return PostResult(False, "Log in to post.")
     if venue_id is None:
@@ -1283,11 +1303,16 @@ def create_post(database, user, venue_id, text, image_bytes=None, image_name=Non
     text = (text or "").strip()
     if len(text) > MAX_POST_LENGTH:
         return PostResult(False, f"Posts can be at most {MAX_POST_LENGTH} characters.")
-    if not text and not image_bytes:
+    photos = [pair for pair in (images or []) if pair and pair[0]]
+    if not photos and image_bytes:
+        photos = [(image_bytes, image_name)]
+    if len(photos) > MAX_POST_PHOTOS:
+        return PostResult(False, f"A post can have at most {MAX_POST_PHOTOS} photos.")
+    if not text and not photos:
         return PostResult(False, "Add some text or a photo.")
     try:
-        post_id = database.create_post(user["id"], venue_id, text or None,
-                                       image_bytes or None, image_name, now=now, location_name=location_name)
+        post_id = database.create_post(user["id"], venue_id, text or None, now=now,
+                                       location_name=location_name, images=photos)
     except ValueError as error:
         return PostResult(False, str(error))
     return PostResult(True, "Posted!", post_id)
@@ -1297,7 +1322,15 @@ def get_feed(database, user):
     """Return the user's feed: own posts, people they follow and bars they follow."""
     if not _is_logged_in(user):
         return []
-    return _add_like_details(database, database.get_feed_posts(user["id"]), user)
+    posts = _add_photo_ids(database, database.get_feed_posts(user["id"]))
+    return _add_like_details(database, posts, user)
+
+
+def _add_photo_ids(database, posts):
+    """Attach each post's photo ids, so a post can show more than its cover photo."""
+    for post in posts:
+        post["image_ids"] = database.get_post_image_ids(post["id"])
+    return posts
 
 
 def _add_like_details(database, posts, user):
@@ -1317,7 +1350,7 @@ def _add_like_details(database, posts, user):
 
 def get_venue_posts(database, venue_id, user=None):
     """Return all posts about a venue."""
-    posts = database.get_venue_posts(venue_id)
+    posts = _add_photo_ids(database, database.get_venue_posts(venue_id))
     return _add_like_details(database, posts, user) if _is_logged_in(user) else posts
 
 
@@ -1328,7 +1361,7 @@ def get_venue_community_photos(database, venue_id):
 
 def get_post_for_viewer(database, post_id, viewer):
     """Return one post with the viewer's like state for the feed screen."""
-    posts = database.get_post_details(post_id)
+    posts = _add_photo_ids(database, database.get_post_details(post_id))
     if not posts:
         return None
     return _add_like_details(database, posts, viewer)[0] if _is_logged_in(viewer) else posts[0]
@@ -1336,8 +1369,204 @@ def get_post_for_viewer(database, post_id, viewer):
 
 def get_user_posts(database, user_id, viewer=None):
     """Return all posts written by a user."""
-    posts = database.get_user_posts(user_id)
+    posts = _add_photo_ids(database, database.get_user_posts(user_id))
     return _add_like_details(database, posts, viewer) if _is_logged_in(viewer) else posts
+
+
+def delete_post(database, user, post_id):
+    """Delete a post only when the signed-in user wrote it."""
+    if not _is_logged_in(user):
+        return PostResult(False, "Log in to delete a post.")
+    posts = database.get_post_details(post_id)
+    if not posts:
+        return PostResult(False, "That post could not be found.")
+    if posts[0]["user_id"] != user["id"]:
+        return PostResult(False, "You can only delete your own posts.")
+    database.delete_post(post_id)
+    return PostResult(True, "Post deleted.", post_id)
+
+
+def _is_business(user):
+    """Return whether the signed-in user is a bar owner account."""
+    return _is_logged_in(user) and user.get("role") == "business"
+
+
+def claim_venue(database, user, venue_id, now=None):
+    """Let a bar owner take responsibility for one venue."""
+    if not _is_business(user):
+        return VenueAdminResult(False, "Only bar accounts can manage a venue.")
+    if venue_id is None or database.get_venue_by_id(venue_id) is None:
+        return VenueAdminResult(False, "Choose a bar from the list.")
+    if database.get_owned_venue_id(user["id"]) is not None:
+        return VenueAdminResult(False, "Your account already manages a bar.")
+    if database.get_venue_owner_id(venue_id) is not None:
+        return VenueAdminResult(False, "Another account already manages this bar.")
+    database.claim_venue(user["id"], venue_id, now=now)
+    return VenueAdminResult(True, "You now manage this bar.")
+
+
+def release_venue(database, user):
+    """Let a bar owner step away from the venue they manage."""
+    if not _is_business(user):
+        return VenueAdminResult(False, "Only bar accounts can manage a venue.")
+    if database.get_owned_venue_id(user["id"]) is None:
+        return VenueAdminResult(False, "Your account does not manage a bar.")
+    database.release_venue(user["id"])
+    return VenueAdminResult(True, "You no longer manage that bar.")
+
+
+def get_owned_venue(database, user):
+    """Return the venue a bar owner manages, or None."""
+    if not _is_business(user):
+        return None
+    venue_id = database.get_owned_venue_id(user["id"])
+    return database.get_venue_by_id(venue_id) if venue_id is not None else None
+
+
+def get_venue_manager_id(database, venue_id):
+    """Return the user id that manages a venue, or None."""
+    return database.get_venue_owner_id(venue_id)
+
+
+def can_manage_venue(database, user, venue_id):
+    """Return whether this user may change a venue's menu and hours."""
+    return _is_business(user) and database.get_venue_owner_id(venue_id) == user["id"]
+
+
+def _valid_price(value):
+    """Return a rounded price in euros, or None when it is not usable."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    price = round(float(value), 2)
+    if price < MIN_MENU_PRICE or price > MAX_MENU_PRICE:
+        return None
+    return price
+
+
+def _check_menu_input(name, price):
+    """Validate a menu line and return (name, price) or a refusal message."""
+    if not isinstance(name, str):
+        return None, "Give the item a name."
+    name = name.strip()
+    if not name:
+        return None, "Give the item a name."
+    if len(name) > MAX_MENU_NAME_LENGTH:
+        return None, f"Names can be at most {MAX_MENU_NAME_LENGTH} characters."
+    checked = _valid_price(price)
+    if checked is None:
+        return None, (f"Prices run from {MIN_MENU_PRICE:.2f} € to "
+                      f"{MAX_MENU_PRICE:.2f} €.")
+    return (name, checked), None
+
+
+def get_menu(database, venue_id):
+    """Return a venue's menu, in the order its owner arranged it."""
+    return database.get_menu_items(venue_id)
+
+
+def add_menu_item(database, user, venue_id, name, price, now=None):
+    """Add one line to the menu of the venue this user manages."""
+    if not can_manage_venue(database, user, venue_id):
+        return VenueAdminResult(False, "Only the bar that manages this venue can change its menu.")
+    if database.count_menu_items(venue_id) >= MAX_MENU_ITEMS:
+        return VenueAdminResult(False, f"A menu can have at most {MAX_MENU_ITEMS} items.")
+    checked, problem = _check_menu_input(name, price)
+    if problem:
+        return VenueAdminResult(False, problem)
+    item_id = database.add_menu_item(venue_id, checked[0], checked[1], now=now)
+    return VenueAdminResult(True, "Menu item added.", item_id)
+
+
+def update_menu_item(database, user, item_id, name, price, now=None):
+    """Change one menu line, when this user manages its venue."""
+    item = database.get_menu_item(item_id)
+    if item is None:
+        return VenueAdminResult(False, "That menu item could not be found.")
+    if not can_manage_venue(database, user, item["venue_id"]):
+        return VenueAdminResult(False, "Only the bar that manages this venue can change its menu.")
+    checked, problem = _check_menu_input(name, price)
+    if problem:
+        return VenueAdminResult(False, problem)
+    database.update_menu_item(item_id, checked[0], checked[1], now=now)
+    return VenueAdminResult(True, "Menu item updated.", item_id)
+
+
+def delete_menu_item(database, user, item_id):
+    """Remove one menu line, when this user manages its venue."""
+    item = database.get_menu_item(item_id)
+    if item is None:
+        return VenueAdminResult(False, "That menu item could not be found.")
+    if not can_manage_venue(database, user, item["venue_id"]):
+        return VenueAdminResult(False, "Only the bar that manages this venue can change its menu.")
+    database.delete_menu_item(item_id)
+    return VenueAdminResult(True, "Menu item removed.", item_id)
+
+
+def _clock_text(value):
+    """Return a 'HH:MM' string for a time object or text, or None if unusable."""
+    if value is None:
+        return None
+    if hasattr(value, "strftime") and not isinstance(value, str):
+        return value.strftime("%H:%M")
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.strptime(value.strip(), "%H:%M").strftime("%H:%M")
+    except ValueError:
+        return None
+
+
+def set_venue_hours(database, user, venue_id, weekday, opens_at, closes_at,
+                    closed=False, now=None):
+    """Set one weekday's opening hours for the venue this user manages.
+
+    A closing time earlier than the opening time is normal for a bar and means the
+    venue stays open past midnight, so it is accepted.
+    """
+    if not can_manage_venue(database, user, venue_id):
+        return VenueAdminResult(False, "Only the bar that manages this venue can change its hours.")
+    if not isinstance(weekday, int) or isinstance(weekday, bool) or not 0 <= weekday <= 6:
+        return VenueAdminResult(False, "Choose a weekday.")
+    if closed:
+        database.save_venue_hours(venue_id, weekday, None, None, True, now=now)
+        return VenueAdminResult(True, f"{WEEKDAY_NAMES[weekday]} saved as closed.")
+    opens = _clock_text(opens_at)
+    closes = _clock_text(closes_at)
+    if opens is None or closes is None:
+        return VenueAdminResult(False, "Give both an opening and a closing time, as HH:MM.")
+    if opens == closes:
+        return VenueAdminResult(False, "Opening and closing time cannot be the same.")
+    database.save_venue_hours(venue_id, weekday, opens, closes, False, now=now)
+    return VenueAdminResult(True, f"{WEEKDAY_NAMES[weekday]} saved.")
+
+
+def get_opening_hours(database, venue_id):
+    """Return all seven weekdays with their hours, ready to show."""
+    saved = {row["weekday"]: row for row in database.get_venue_hours(venue_id)}
+    week = []
+    for weekday, name in enumerate(WEEKDAY_NAMES):
+        row = saved.get(weekday)
+        if row is None:
+            week.append({"weekday": weekday, "name": name, "closed": False,
+                         "opens_at": None, "closes_at": None, "text": "Not set"})
+        elif row["closed"]:
+            week.append({"weekday": weekday, "name": name, "closed": True,
+                         "opens_at": None, "closes_at": None, "text": "Closed"})
+        else:
+            week.append({"weekday": weekday, "name": name, "closed": False,
+                         "opens_at": row["opens_at"], "closes_at": row["closes_at"],
+                         "text": f"{row['opens_at']}–{row['closes_at']}"})
+    return week
+
+
+def current_weekday():
+    """Return today's weekday in Lisbon, Monday as 0."""
+    return datetime.now(LISBON).weekday()
+
+
+def has_opening_hours(database, venue_id):
+    """Return whether a venue has any opening hours saved."""
+    return bool(database.get_venue_hours(venue_id))
 
 
 def add_comment(database, user, post_id, text, now=None):
@@ -1396,9 +1625,11 @@ def format_post_time(timestamp):
     return f"{moment.day} {moment.strftime('%b %Y, %H:%M')}"
 
 
-def create_app_post(user, venue_id, text, image_bytes=None, image_name=None, location_name=None):
+def create_app_post(user, venue_id, text, image_bytes=None, image_name=None,
+                    location_name=None, images=None):
     """Create a post through the configured database."""
-    return create_post(db, user, venue_id, text, image_bytes, image_name, location_name=location_name)
+    return create_post(db, user, venue_id, text, image_bytes, image_name,
+                       location_name=location_name, images=images)
 
 
 def get_app_feed(user):
@@ -1426,12 +1657,93 @@ def get_app_user_posts(user_id, viewer=None):
     return get_user_posts(db, user_id, viewer)
 
 
+def get_app_post_photos(post):
+    """Return every photo id on a post, falling back to its single cover photo."""
+    ids = post.get("image_ids")
+    if ids:
+        return list(ids)
+    return [post["image_id"]] if post.get("image_id") else []
+
+
 def get_app_post_image(post):
     """Return one post's image bytes from the database, or None."""
     if not post.get("image_id"):
         return None
     image = db.get_image_file(post["image_id"])
     return image["bytes"] if image else None
+
+
+def get_app_image_bytes(image_id):
+    """Return one stored image's bytes by id, or None."""
+    if not image_id:
+        return None
+    image = db.get_image_file(image_id)
+    return image["bytes"] if image else None
+
+
+def claim_app_venue(user, venue_id):
+    """Take ownership of a venue through the configured database."""
+    return claim_venue(db, user, venue_id)
+
+
+def release_app_venue(user):
+    """Give up ownership of a venue through the configured database."""
+    return release_venue(db, user)
+
+
+def get_app_owned_venue(user):
+    """Return the venue this bar account manages, or None."""
+    return get_owned_venue(db, user)
+
+
+def can_manage_app_venue(user, venue_id):
+    """Return whether this user may change a venue's menu and hours."""
+    return can_manage_venue(db, user, venue_id)
+
+
+def get_app_venue_manager_id(venue_id):
+    """Return the user id that manages a venue, or None."""
+    return get_venue_manager_id(db, venue_id)
+
+
+def get_app_menu(venue_id):
+    """Read a venue's menu through the configured database."""
+    return get_menu(db, venue_id)
+
+
+def add_app_menu_item(user, venue_id, name, price):
+    """Add a menu item through the configured database."""
+    return add_menu_item(db, user, venue_id, name, price)
+
+
+def update_app_menu_item(user, item_id, name, price):
+    """Change a menu item through the configured database."""
+    return update_menu_item(db, user, item_id, name, price)
+
+
+def delete_app_menu_item(user, item_id):
+    """Remove a menu item through the configured database."""
+    return delete_menu_item(db, user, item_id)
+
+
+def set_app_venue_hours(user, venue_id, weekday, opens_at, closes_at, closed=False):
+    """Save one weekday's opening hours through the configured database."""
+    return set_venue_hours(db, user, venue_id, weekday, opens_at, closes_at, closed)
+
+
+def get_app_opening_hours(venue_id):
+    """Read a venue's seven weekdays through the configured database."""
+    return get_opening_hours(db, venue_id)
+
+
+def app_current_weekday():
+    """Return today's weekday in Lisbon for the screens."""
+    return current_weekday()
+
+
+def app_has_opening_hours(venue_id):
+    """Return whether a venue has any opening hours saved."""
+    return has_opening_hours(db, venue_id)
 
 
 def add_app_comment(user, post_id, text):
@@ -1442,6 +1754,11 @@ def add_app_comment(user, post_id, text):
 def get_app_comments(post_id):
     """Read comments through the configured database."""
     return get_comments(db, post_id)
+
+
+def delete_app_post(user, post_id):
+    """Delete one of the signed-in user's posts through the configured database."""
+    return delete_post(db, user, post_id)
 
 
 def delete_app_comment(user, comment_id):

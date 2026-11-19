@@ -20,14 +20,17 @@ Builds on spec 06 (posts), 07/09 (comments, likes), 08 (messages, groups) and
 
 ### 2. Rules (`logic.py`)
 - **Triggers:** like on your post, comment on your post, being tagged in a post, being
-  added to a group (when it is created or later), and messages in your conversations.
+  added to a group (when it is created or later), a new meetup in your group, and
+  messages in your conversations.
 - Never notify people about their own actions.
 - Liking, unliking and liking again notifies only once.
 - Messages: one unread notification per conversation; a newer message moves it to the
   top and shows it as a new pop-up again.
 - **Tags:** chosen from a list when posting; at most 10, not yourself, existing users
   only, duplicates ignored. Shown under the post as "with @a, @b".
-- **Email:** only when SMTP is set up and the user has email notifications on. Likes,
+- **Email:** only when SMTP is set up, the user has email notifications on, and the
+  user has chosen that category in My profile (likes/comments, tags, group invites,
+  new meetups, messages, Notify bro; all are on until the user changes them). Likes,
   comments and messages: at most one email per hour for the same post or conversation.
   Tags and group invites: every time. Emails never contain message, comment or post
   text. A failing email never fails the action that caused it.
@@ -47,7 +50,7 @@ Builds on spec 06 (posts), 07/09 (comments, likes), 08 (messages, groups) and
 
 - Real push notifications to the phone or desktop when the app is closed (Streamlit
   cannot register a service worker); email covers that case.
-- Choosing per notification type which ones to get; deleting notifications.
+- Choosing per notification type which ones to see in the app; deleting notifications.
 - Tagging by typing @username in the text.
 
 ## Done when

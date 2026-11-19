@@ -908,12 +908,19 @@ def show_profile(user, profile_id):
                 st.rerun()
             st.error(result.message)
         with st.form("email-notifications-form"):
-            enabled = st.checkbox("Email notifications", value=logic.app_email_notifications_enabled(user))
+            st.markdown("**Email notifications**")
+            enabled = st.checkbox("Send me emails", value=logic.app_email_notifications_enabled(user))
+            st.caption("Choose what you want by email (you always see everything under Notifications):")
+            current = logic.get_app_email_categories(user)
+            chosen = [category for category, label in logic.EMAIL_CATEGORIES.items()
+                      if st.checkbox(label, value=category in current, key=f"email-category-{category}")]
             save_notifications = st.form_submit_button("Save notification settings")
         if save_notifications:
             result = logic.set_app_email_notifications(user, enabled)
             if result.success:
-                st.success(result.message)
+                result = logic.set_app_email_categories(user, chosen)
+            if result.success:
+                st.success("Notification settings saved.")
             else:
                 st.error(result.message)
 
@@ -1150,7 +1157,7 @@ def show_venue_community_photos(user, venue_id):
 
 
 ALERT_ICONS = {"like": ":material/favorite:", "comment": ":material/chat_bubble:", "tag": ":material/sell:",
-               "group_added": ":material/group_add:", "message": ":material/mail:"}
+               "group_added": ":material/group_add:", "event": ":material/event:", "message": ":material/mail:"}
 
 
 def open_conversation(conversation_id):

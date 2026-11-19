@@ -488,3 +488,11 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** keeps emails useful and private (same rule as Notify bro, D in spec 10).
 - **Instead of:** an email for every event.
 - **Where:** `logic._email_alert`, `alerts.emailed_at`.
+
+### D-069 · Users choose which notifications they get by email
+*19 Nov 2026 · spec 14*
+
+- **What:** My profile has "Send me emails" plus six choices: likes/comments, tags, group invites, new meetups, messages and Notify bro. Stored as `users.email_categories` (comma list; empty = none; not set = all, so nothing changes for existing users). Creating a meetup now notifies the group (new kind `event`). The fixed list of kinds in the `alerts` table was removed (checked in `logic.py` instead) so new kinds need no migration.
+- **Why:** people want e.g. meetups and messages by email, but not every like.
+- **Instead of:** one on/off switch for all email.
+- **Where:** `logic.EMAIL_CATEGORIES`, `logic.wants_email`, `db._ensure_email_categories_column`, `db._drop_alert_kind_check`, `app.py` profile form.

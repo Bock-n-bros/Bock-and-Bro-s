@@ -229,3 +229,89 @@ def test_email_failure_does_not_break_the_action(alert_db, monkeypatch):
 
     assert logic.add_comment(alert_db, ben, post, "Nice").success
     assert texts(alert_db, anna) == ["ben commented on your post"]
+
+
+def test_all_email_categories_are_on_by_default(alert_db):
+    anna = make_user(alert_db, "anna")
+
+    assert logic.get_email_categories(alert_db, anna) == set(logic.EMAIL_CATEGORIES)
+
+
+def test_user_can_choose_which_notifications_are_emailed(alert_db, sent):
+    anna, ben = make_user(alert_db, "anna"), make_user(alert_db, "ben")
+    assert logic.set_email_categories(alert_db, anna, ["messages"]).success
+    post = logic.create_post(alert_db, anna, make_venue(alert_db), "Cheers").post_id
+    chat = logic.start_direct_conversation(alert_db, ben, anna["id"]).conversation_id
+
+    logic.toggle_like(alert_db, ben, post)
+    logic.send_message(alert_db, ben, chat, "Hi")
+
+    assert [subject for _, subject, _ in sent] == ["Bock'n Bros: ben sent you a message"]
+    assert texts(alert_db, anna) == ["ben sent you a message", "ben liked your post"]
+
+
+def test_no_categories_means_no_emails_but_still_in_app(alert_db, sent):
+    anna, ben, cleo = (make_user(alert_db, name) for name in ("anna", "ben", "cleo"))
+    logic.set_email_categories(alert_db, ben, [])
+
+    logic.create_group_conversation(alert_db, anna, "Friday", [ben["id"], cleo["id"]])
+
+    assert [recipient for recipient, _, _ in sent] == ["cleo@example.com"]
+    assert texts(alert_db, ben) == ["anna added you to Friday"]
+
+
+def test_unknown_category_is_refused(alert_db):
+    anna = make_user(alert_db, "anna")
+
+    assert not logic.set_email_categories(alert_db, anna, ["spam"]).success
+    assert logic.get_email_categories(alert_db, anna) == set(logic.EMAIL_CATEGORIES)
+
+
+def test_new_meetup_notifies_group_members_and_respects_meetup_choice(alert_db, sent):
+    anna, ben, cleo = (make_user(alert_db, name) for name in ("anna", "ben", "cleo"))
+    group = logic.create_group_conversation(alert_db, anna, "Friday", [ben["id"], cleo["id"]]).conversation_id
+    logic.set_email_categories(alert_db, cleo, ["messages"])
+    sent.clear()
+
+    result = logic.create_event(alert_db, anna, group, make_venue(alert_db), "Drinks", "2026-11-20T20:00")
+
+    assert result.success
+    assert texts(alert_db, ben)[0] == "anna planned a meetup in Friday"
+    assert texts(alert_db, cleo)[0] == "anna planned a meetup in Friday"
+    assert [recipient for recipient, _, _ in sent] == ["ben@example.com"]
+
+
+def test_notify_bro_respects_the_notify_bro_choice(alert_db, monkeypatch):
+    outbox = []
+    monkeypatch.setattr(mail, "smtp_configured", lambda: True)
+    monkeypatch.setattr(mail, "send_notification", lambda recipient, subject, body: outbox.append(recipient))
+    anna, ben = make_user(alert_db, "anna"), make_user(alert_db, "ben")
+    chat = logic.start_direct_conversation(alert_db, anna, ben["id"]).conversation_id
+    logic.set_email_categories(alert_db, ben, ["posts", "messages"])
+
+    result = logic.notify_conversation(alert_db, anna, chat)
+
+    assert not result.success
+    assert outbox == []
+
+
+def test_alerts_table_from_first_version_is_upgraded(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "_database_url", lambda: None)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "old.db")
+    db.init_db()
+    with db._connect() as connection:
+        connection.execute("DROP TABLE alerts")
+        connection.execute(
+            "CREATE TABLE alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, recipient_id INTEGER NOT NULL, "
+            "actor_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('like', 'comment', 'tag', "
+            "'group_added', 'message')), post_id INTEGER, conversation_id INTEGER, created_at TEXT NOT NULL, "
+            "read_at TEXT, toasted INTEGER NOT NULL DEFAULT 0, emailed_at TEXT)")
+        connection.execute("INSERT INTO alerts (recipient_id, actor_id, kind, created_at) VALUES (1, 2, 'like', '2026')")
+    monkeypatch.setattr(db, "_initialized_key", None)
+
+    db.init_db()
+    db.add_alert(1, 2, "event", conversation_id=None)
+
+    with db._connect() as connection:
+        kinds = [row[0] for row in connection.execute("SELECT kind FROM alerts ORDER BY id").fetchall()]
+    assert kinds == ["like", "event"]

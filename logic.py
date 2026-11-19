@@ -824,6 +824,8 @@ def create_event(database, user, conversation_id, venue_id, title, starts_at,
         return EventResult(False, "Choose a valid date and time.")
     event_id = database.add_event(conversation_id, venue_id, title.strip(), start,
                                   max_attendees, user["id"], now=now)
+    for member in database.get_conversation_members(conversation_id):
+        notify(database, member["id"], user, "event", conversation_id=conversation_id, now=now)
     return EventResult(True, "Meetup created.", event_id)
 
 
@@ -909,7 +911,7 @@ def _send_notification(database, sender, conversation, recipient_id, subject, de
     recipient = database.get_email_notification_settings(recipient_id)
     if recipient is None:
         return "missing"
-    if not recipient["email_notifications"]:
+    if not wants_email(recipient, "notify_bro"):
         return "disabled"
     remaining = _notification_cooldown(database, conversation["id"], recipient_id, now)
     if remaining is not None:
@@ -1799,7 +1801,18 @@ def toggle_app_like(user, post_id):
 # In-app notifications ("alerts") with optional email (spec 14)
 # ---------------------------------------------------------------------------
 
-ALERT_KINDS = ("like", "comment", "tag", "group_added", "message")
+ALERT_KINDS = ("like", "comment", "tag", "group_added", "event", "message")
+# What users can choose to get by email (My profile). Stored as a comma list; NULL = all.
+EMAIL_CATEGORIES = {
+    "posts": "Likes and comments on my posts",
+    "tags": "When someone tags me in a post",
+    "groups": "When someone adds me to a group",
+    "meetups": "New meetups in my groups",
+    "messages": "New messages",
+    "notify_bro": "Notify bro reminders",
+}
+ALERT_EMAIL_CATEGORY = {"like": "posts", "comment": "posts", "tag": "tags", "group_added": "groups",
+                        "event": "meetups", "message": "messages"}
 # Kinds that get at most one email per hour for the same post or conversation, so a busy
 # post or chat does not flood the inbox. Tags and group invites are emailed every time.
 _THROTTLED_EMAIL_KINDS = {"like", "comment", "message"}
@@ -1832,6 +1845,8 @@ def alert_text(alert):
         return f"{actor} tagged you in a post"
     if alert["kind"] == "group_added":
         return f"{actor} added you to {group}"
+    if alert["kind"] == "event":
+        return f"{actor} planned a meetup in {group}"
     if alert.get("is_group"):
         return f"{actor} sent a message in {group}"
     return f"{actor} sent you a message"
@@ -1867,7 +1882,7 @@ def _email_alert(database, alert_id, recipient_id, actor, kind, post_id, convers
     if not mail.smtp_configured():
         return False
     settings = database.get_email_notification_settings(recipient_id)
-    if settings is None or not settings["email_notifications"]:
+    if not wants_email(settings, ALERT_EMAIL_CATEGORY[kind]):
         return False
     current = _utc(now)
     if kind in _THROTTLED_EMAIL_KINDS:
@@ -1939,3 +1954,45 @@ def count_app_unread_alerts(user):
 def mark_app_alerts_read(user):
     """Mark notifications read through the configured database."""
     mark_alerts_read(db, user)
+
+
+def parse_email_categories(text):
+    """Turn the stored comma list into a set; None (never saved) means every category."""
+    if text is None:
+        return set(EMAIL_CATEGORIES)
+    return {item for item in text.split(",") if item in EMAIL_CATEGORIES}
+
+
+def wants_email(settings, category):
+    """Return whether a user's settings allow an email of this category."""
+    return bool(settings and settings["email_notifications"]
+                and category in parse_email_categories(settings.get("email_categories")))
+
+
+def get_email_categories(database, user):
+    """Return the categories the signed-in user gets by email."""
+    if not _is_logged_in(user):
+        return set()
+    return parse_email_categories(database.get_email_categories(user["id"]))
+
+
+def set_email_categories(database, user, categories):
+    """Save which categories the signed-in user wants by email."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to change notification settings.")
+    categories = list(categories or [])
+    if any(category not in EMAIL_CATEGORIES for category in categories):
+        return NotificationResult(False, "Unknown notification type.")
+    chosen = [category for category in EMAIL_CATEGORIES if category in categories]
+    database.set_email_categories(user["id"], ",".join(chosen))
+    return NotificationResult(True, "Notification settings saved.")
+
+
+def get_app_email_categories(user):
+    """Read email categories through the configured database."""
+    return get_email_categories(db, user)
+
+
+def set_app_email_categories(user, categories):
+    """Save email categories through the configured database."""
+    return set_email_categories(db, user, categories)

@@ -758,6 +758,8 @@ def show_post(user, post, key):
                 st.caption("Photo unavailable")
         if post["text"]:
             st.text(post["text"])
+        if post.get("tags"):
+            st.caption("with " + ", ".join("@" + tag["username"] for tag in post["tags"]))
         st.caption(logic.format_post_time(post["created_at"]))
         like_label = "Unlike" if post["liked_by_me"] else "Like"
         if st.button(f"{like_label} · {post['like_count']}", key=f"{key}-like-{post['id']}"):
@@ -809,12 +811,15 @@ def show_post_form(user, key, venue_id=None):
     with st.form(f"{key}-post-form", clear_on_submit=True):
         text = st.text_area("What's happening?", max_chars=logic.MAX_POST_LENGTH)
         photo = st.file_uploader("Photo (optional, JPG, PNG, iPhone HEIC or WEBP)", type=logic.IMAGE_TYPES)
+        people = {person["id"]: person["username"] for person in logic.get_app_group_candidates(user)}
+        tagged = st.multiselect("Tag people (optional)", list(people), format_func=people.get,
+                                max_selections=logic.MAX_TAGS, placeholder="Search by username")
         submitted = st.form_submit_button("Post", type="primary")
     if submitted:
         result = logic.create_app_post(user, chosen_venue, text,
                                        photo.getvalue() if photo else None,
                                        photo.name if photo else None,
-                                       location_name=other_location)
+                                       location_name=other_location, tagged_user_ids=tagged)
         if result.success:
             st.toast(result.message)
         else:
@@ -839,7 +844,7 @@ def show_feed_page(user):
     if selected_post_id is not None:
         selected_post = logic.get_app_post_for_viewer(selected_post_id, user)
         if selected_post is not None:
-            st.caption("Opened from venue photos")
+            st.caption("Opened post")
             show_post(user, selected_post, "feed-selected")
             feed_posts = [post for post in feed_posts if post["id"] != selected_post_id]
     show_post_list(user, feed_posts,
@@ -862,13 +867,67 @@ def show_venue_community_photos(user, venue_id):
                   on_click=open_post_in_feed, args=(post["id"],))
 
 
-PAGES = ["Feed", "Venues", "People", "Messages", "My profile"]
+ALERT_ICONS = {"like": ":material/favorite:", "comment": ":material/chat_bubble:", "tag": ":material/sell:",
+               "group_added": ":material/group_add:", "message": ":material/mail:"}
+
+
+def open_conversation(conversation_id):
+    """Button callback: open a conversation on the Messages page."""
+    st.session_state.conversation_id = conversation_id
+    st.session_state.page = "Messages"
+
+
+def go_to_notifications():
+    """Button callback: open the Notifications page."""
+    st.session_state.page = "Notifications"
+
+
+@st.fragment(run_every=10)
+def show_alert_bell(user):
+    """Check for new notifications every 10 seconds, pop them up and show the unread count."""
+    reading_chat = (st.session_state.get("page") == "Messages"
+                    and st.session_state.get("conversation_id") is not None)
+    for alert in logic.take_app_new_alerts(user)[-3:]:
+        # No pop-up for messages in the chat the user is looking at right now.
+        if reading_chat and alert["kind"] == "message" and alert["conversation_id"] == st.session_state.conversation_id:
+            continue
+        st.toast(alert["text"], icon=ALERT_ICONS.get(alert["kind"]), duration="long")
+    # On the Notifications page everything shown is being read, so no "new" count there.
+    unread = 0 if st.session_state.get("page") == "Notifications" else logic.count_app_unread_alerts(user)
+    label = f"Notifications · {unread} new" if unread else "Notifications"
+    if st.button(label, icon=":material/notifications:", key="alert-bell",
+                 type="primary" if unread else "secondary", on_click=go_to_notifications):
+        st.rerun(scope="app")
+
+
+def show_notifications_page(user):
+    """List the user's notifications, newest first, and mark them as read."""
+    st.header("Notifications")
+    alerts = logic.get_app_alerts(user)
+    if not alerts:
+        st.caption("No notifications yet. Likes, comments, tags, group invites and messages show up here.")
+    for alert in alerts:
+        text_col, button_col = st.columns([5, 1])
+        marker = "**New** · " if alert["read_at"] is None else ""
+        text_col.markdown(f"{ALERT_ICONS.get(alert['kind'], '')} {marker}{html.escape(alert['text'])}")
+        text_col.caption(logic.format_post_time(alert["created_at"]))
+        if alert["post_id"] is not None:
+            button_col.button("Open", key=f"alert-{alert['id']}", on_click=open_post_in_feed, args=(alert["post_id"],))
+        elif alert["conversation_id"] is not None:
+            button_col.button("Open", key=f"alert-{alert['id']}", on_click=open_conversation,
+                              args=(alert["conversation_id"],))
+    # Seeing the list counts as reading it; "New" disappears the next time the page is opened.
+    logic.mark_app_alerts_read(user)
+
+
+PAGES = ["Feed", "Venues", "People", "Messages", "Notifications", "My profile"]
 
 if logic.can_view_venues(user):
     with st.sidebar:
         st.write(user["username"])
         st.write(f"Role: {user['role'].title()}")
         page = st.radio("Go to", PAGES, key="page")
+        show_alert_bell(user)
         if st.button("Log out"):
             for key in ("venue_id", "conversation_id", "profile_id"):
                 st.session_state.pop(key, None)
@@ -887,6 +946,9 @@ if logic.can_view_venues(user):
         st.stop()
     if page == "My profile":
         show_profile(user, user["id"])
+        st.stop()
+    if page == "Notifications":
+        show_notifications_page(user)
         st.stop()
 
     if st.session_state.get("venue_id") is not None:

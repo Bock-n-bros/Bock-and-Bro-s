@@ -62,7 +62,7 @@ def test_post_insert_uses_portable_helpers_with_simulated_postgres(monkeypatch):
 
 def test_postgres_tables_use_identity_ids():
     statements = db._table_statements("postgres")
-    assert len(statements) == 15
+    assert len(statements) == 17
     identity_tables = ("users", "venues", "reviews", "images", "posts", "comments", "conversations", "messages", "events", "notifications")
     for table in identity_tables:
         sql = next(item for item in statements if f"CREATE TABLE IF NOT EXISTS {table} " in item)
@@ -95,7 +95,8 @@ def test_postgres_initialization_enables_rls_on_every_table(monkeypatch):
     enabled = [sql for sql in calls if sql.startswith("ALTER TABLE") and "ROW LEVEL SECURITY" in sql]
     assert enabled == [f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" for table in (
         "images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
-        "conversations", "conversation_members", "messages", "events", "event_responses", "notifications")]
+        "conversations", "conversation_members", "messages", "events", "event_responses", "notifications",
+        "post_tags", "alerts")]
 
 
 def test_postgres_unique_violation_uses_common_duplicate_error():

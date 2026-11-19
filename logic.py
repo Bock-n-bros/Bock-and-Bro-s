@@ -467,13 +467,13 @@ def validate_venues_csv(csv_path):
 
 
 def load_venues(database, csv_path):
-    """Add valid CSV venues missing from the database and report invalid rows."""
+    """Seed valid CSV venues only when the database has no venues."""
+    if database.get_all_venues():
+        return 0
     venues, errors = validate_venues_csv(csv_path)
     for error in errors:
         print(f"Venue loading: {error}")
-    existing_names = {
-        venue["name"].strip().casefold() for venue in database.get_all_venues()
-    }
+    existing_names = set()
     loaded = 0
     for item in venues:
         name_key = item["name"].casefold()

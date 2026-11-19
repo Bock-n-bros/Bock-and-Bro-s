@@ -1,4 +1,4 @@
-"""Add missing seed venues to the local database."""
+"""Seed venue data when the venues table is empty."""
 
 from pathlib import Path
 
@@ -10,7 +10,7 @@ VENUES_CSV = Path(__file__).resolve().parent / "data" / "venues.csv"
 
 
 def load_demo_venues():
-    """Add CSV venues whose names are not already stored."""
+    """Load CSV venues only into an empty venues table."""
     return logic.load_venues(db, VENUES_CSV)
 
 

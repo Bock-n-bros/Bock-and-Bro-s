@@ -27,9 +27,10 @@ stores its coordinates now, so the map in a later step can use them without chan
 
 ### 3. Rules (`logic.py`)
 - **Loading venues** (`seed.py` calls logic, logic calls db):
-- On startup, load valid rows from `data/venues.csv` whose names are not already in
-  the venues table (case-insensitive name match).
-- Keep existing venue records and their reviews; repeated startup adds no duplicates.
+- On startup, load valid rows from `data/venues.csv` only when the venues table is
+  completely empty. If any venue already exists, insert no CSV rows.
+- Keep existing venue records and their reviews; repeated startup never fills in missing
+  CSV rows after the table has been populated.
   - Each row is validated before saving: name, neighbourhood and address are not empty;
     `venue_type` is one of the allowed values; `shows_football` is yes/no;
     latitude is between 38.68 and 38.80 and longitude between -9.25 and -9.08 (Lisbon).

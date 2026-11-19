@@ -11,9 +11,11 @@ from urllib.parse import quote_plus
 import logic
 import styles
 import weather
+from urllib.parse import urlencode
 
 st.set_page_config(page_title="Bock'n Bros", page_icon="🍺")
 st.markdown(styles.THEME_CSS, unsafe_allow_html=True)
+st.markdown(styles.POST_HEADER_LINK_CSS, unsafe_allow_html=True)
 st.logo(str(Path(__file__).resolve().parent / "static" / "logo.svg"), size="large")
 
 try:
@@ -69,7 +71,7 @@ def render_review_form(venue, user):
         )
         if result.success:
             st.session_state.pop("review_form_venue_id", None)
-            st.success(result.message)
+            st.toast(result.message)
             st.rerun()
         st.error(result.message)
 
@@ -117,7 +119,7 @@ def render_venue_weather(venue):
             )
 
 
-def render_venue_card(venue, user, compact=False, review_summary=None):
+def render_venue_card(venue, user, compact=False, review_summary=None, map_preview=False):
     """Render shared venue details, reviews, weather and relevant actions."""
     venue_id = venue["id"]
     reviews = logic.get_venue_reviews(venue_id)
@@ -138,6 +140,21 @@ def render_venue_card(venue, user, compact=False, review_summary=None):
 
     if compact:
         st.write(logic.format_venue_card_summary(summary, cheapest_price))
+        if map_preview:
+            view_col, directions_col = st.columns([1, 1])
+            view_col.button(
+                "View bar", key=f"map-view-bar-{venue_id}", type="primary",
+                on_click=open_venue, args=(venue_id,),
+            )
+            directions_url = (
+                "https://www.google.com/maps/dir/?api=1&destination="
+                f"{venue['latitude']},{venue['longitude']}&travelmode=walking"
+            )
+            directions_col.markdown(
+                f'<a href="{html.escape(directions_url, quote=True)}" target="_blank">'
+                "Directions ↗</a>", unsafe_allow_html=True,
+            )
+            return
 
     render_venue_weather(venue)
     follow_status = logic.get_app_venue_follow_status(user, venue_id)
@@ -147,10 +164,13 @@ def render_venue_card(venue, user, compact=False, review_summary=None):
         if previews:
             st.caption("Latest reviews")
             for preview in previews:
-                st.write(
-                    f"{preview['username']} · {preview['rating']:.1f} ★ · "
-                    f"{preview['time_ago']}"
+                preview_col, rating_col = st.columns([3, 2])
+                preview_col.button(
+                    preview["username"], key=f"preview-reviewer-{venue_id}-{preview['user_id']}",
+                    type="tertiary", on_click=open_profile,
+                    args=(preview["user_id"], user["id"]),
                 )
+                rating_col.caption(f"{preview['rating']:.1f} ★ · {preview['time_ago']}")
                 if preview["comment"]:
                     st.text(preview["comment"])
 
@@ -171,6 +191,7 @@ def render_venue_card(venue, user, compact=False, review_summary=None):
         elif follow_col.button("Follow bar", key=f"follow-{venue_id}"):
             result = logic.follow_app_venue(user, venue_id)
             if result.success:
+                st.toast(result.message)
                 st.rerun()
             st.error(result.message)
         reviews_col.button(
@@ -200,11 +221,14 @@ def render_venue_card(venue, user, compact=False, review_summary=None):
     count_col.caption(f"{follow_status['followers']} followers")
     if follow_status["is_following"]:
         if button_col.button("Unfollow bar", key="unfollow-venue"):
-            logic.unfollow_app_venue(user, venue_id)
+            result = logic.unfollow_app_venue(user, venue_id)
+            if result.success:
+                st.toast(result.message)
             st.rerun()
-    elif button_col.button("Follow bar", key=f"follow-{venue_id}", type="primary"):
+    elif button_col.button("Follow bar", key=f"follow-{venue_id}"):
         result = logic.follow_app_venue(user, venue_id)
         if result.success:
+            st.toast(result.message)
             st.rerun()
         st.error(result.message)
     if summary["review_count"]:
@@ -226,9 +250,15 @@ def render_venue_card(venue, user, compact=False, review_summary=None):
     else:
         st.write("Only customers can leave reviews.")
     for review in reviews:
-        st.write(
-            f"{review['username']} · Atmosphere {review['atmosphere']} · "
-            f"Value {review['value']} · Quality {review['quality']}"
+        reviewer_col, score_col = st.columns([2, 4])
+        reviewer_col.button(
+            review["username"], key=f"reviewer-{venue_id}-{review['user_id']}",
+            type="tertiary", on_click=open_profile,
+            args=(review["user_id"], user["id"]),
+        )
+        score_col.write(
+            f"Atmosphere {review['atmosphere']} · Value {review['value']} · "
+            f"Quality {review['quality']}"
         )
         if review["super_bock_price"] is not None:
             st.write(f"Super Bock: €{review['super_bock_price']:.2f}")
@@ -298,15 +328,20 @@ def render_map(venues, user):
         unsafe_allow_html=True,
     )
     selected_objects = selection.selection.get("objects", {}).get("venue-pins", [])
-    if selected_objects:
-        selected_id = selected_objects[0]["id"]
-        selected = next((venue for venue in venues if venue["id"] == selected_id), None)
-        if selected:
-            with st.container(border=True):
-                render_venue_card(
-                    selected, user, compact=True,
-                    review_summary=summaries[selected_id],
-                )
+    visible_ids = {row["id"] for row in map_rows}
+    selected_id = logic.map_preview_selection(
+        selected_objects, visible_ids, st.session_state.get("map_preview_id")
+    )
+    if selected_id is None:
+        st.session_state.pop("map_preview_id", None)
+    else:
+        st.session_state.map_preview_id = selected_id
+        selected = next(venue for venue in venues if venue["id"] == selected_id)
+        summary = summaries[selected_id]
+        with st.container(border=True):
+            render_venue_card(
+                selected, user, compact=True, review_summary=summary, map_preview=True,
+            )
 
 def google_auth_is_configured():
     """Return whether the required Streamlit auth settings are available."""
@@ -364,7 +399,14 @@ def show_conversation(user, conversation_id):
             label = "You" if is_mine else message["username"]
             if not is_mine and message["role"] == "business":
                 label += " · Bar owner"
-            st.caption(f"{label} · {logic.format_message_time(message['created_at'])}")
+            params = logic.profile_link_params(
+                message["user_id"], st.session_state.get("active_page", "Messages")
+            )
+            st.markdown(
+                f"{detail_text_link(label, '👤', params)} · "
+                f"{html.escape(logic.format_message_time(message['created_at']))}",
+                unsafe_allow_html=True,
+            )
             st.text(message["text"])
 
 
@@ -400,8 +442,17 @@ def show_conversation_card(user, conversation, key):
         avatar_col, text_col, open_col = st.columns([1, 5, 1.4],
                                                     vertical_alignment="center")
         show_conversation_avatar(conversation, 40, avatar_col)
-        text_col.markdown(plain_text_title(conversation["title"]),
-                          unsafe_allow_html=True)
+        if not conversation["is_group"] and conversation.get("other_user_id"):
+            profile_query = logic.profile_link_params(
+                conversation["other_user_id"], "Messages"
+            )
+            text_col.markdown(
+                detail_text_link(conversation["title"], "👤", profile_query),
+                unsafe_allow_html=True,
+            )
+        else:
+            text_col.markdown(plain_text_title(conversation["title"]),
+                              unsafe_allow_html=True)
         text_col.caption(conversation_subtitle(conversation))
         if conversation["last_message"]:
             preview = conversation["last_message"]
@@ -412,9 +463,8 @@ def show_conversation_card(user, conversation, key):
         else:
             text_col.caption("No messages yet")
         if open_col.button("Open", key=f"{key}-{conversation['id']}",
-                           type="primary", width="stretch"):
-            st.session_state.conversation_id = conversation["id"]
-            st.rerun()
+                           width="stretch"):
+            open_detail("chat", conversation["id"], "Messages")
 
 
 def show_new_message_picker(user):
@@ -435,8 +485,7 @@ def show_new_message_picker(user):
         if button_col.button("Message", key=f"message-{person['id']}"):
             result = logic.start_app_direct_conversation(user, person["id"])
             if result.success:
-                st.session_state.conversation_id = result.conversation_id
-                st.rerun()
+                open_detail("chat", result.conversation_id, "Messages")
             st.error(result.message)
 
 
@@ -453,8 +502,7 @@ def show_new_group_form(user):
     if st.button("Create group", key="create-group"):
         result = logic.create_app_group(user, group_name, member_ids)
         if result.success:
-            st.session_state.conversation_id = result.conversation_id
-            st.rerun()
+            open_detail("chat", result.conversation_id, "Messages")
         st.error(result.message)
 
 
@@ -462,15 +510,23 @@ def show_open_conversation(user, conversation_id):
     """Show one conversation: who it is with, its meetups and the messages."""
     conversation = logic.get_app_conversation_details(user, conversation_id)
     if conversation is None:
-        st.session_state.pop("conversation_id", None)
-        st.rerun()
-    if st.button("← All conversations", key="back-to-conversations"):
-        st.session_state.pop("conversation_id", None)
-        st.rerun()
+        show_detail_back("Messages")
+        st.subheader("Not found")
+        return
+    show_detail_back("Messages")
     avatar_col, title_col = st.columns([1, 7], vertical_alignment="center")
     show_conversation_avatar(conversation, 56, avatar_col)
-    title_col.markdown(plain_text_title(conversation["title"], size="1.5rem"),
-                       unsafe_allow_html=True)
+    if not conversation["is_group"] and conversation.get("other_user_id"):
+        profile_query = logic.profile_link_params(
+            conversation["other_user_id"], "Messages"
+        )
+        title_col.markdown(
+            detail_text_link(conversation["title"], "👤", profile_query),
+            unsafe_allow_html=True,
+        )
+    else:
+        title_col.markdown(plain_text_title(conversation["title"], size="1.5rem"),
+                           unsafe_allow_html=True)
     title_col.caption(conversation_subtitle(conversation))
     if conversation["is_group"]:
         show_group_controls(user, conversation)
@@ -484,16 +540,13 @@ def show_open_conversation(user, conversation_id):
     if text:
         result = logic.send_app_message(user, conversation_id, text)
         if result.success:
+            st.toast(result.message)
             st.rerun()
         st.error(result.message)
 
 
 def show_messages_page(user):
     """Show my conversations, split into direct chats and groups, or one open chat."""
-    if st.session_state.get("conversation_id") is not None:
-        show_open_conversation(user, st.session_state.conversation_id)
-        return
-
     st.header("My messages")
     conversations = logic.list_app_conversations(user)
     direct = [item for item in conversations if not item["is_group"]]
@@ -559,8 +612,9 @@ def show_group_controls(user, conversation):
         elif st.button("Leave group", key=f"leave-group-{conversation['id']}"):
             result = logic.leave_app_group(user, conversation["id"])
             if result.success:
-                st.session_state.pop("conversation_id", None)
-                st.rerun()
+                st.toast(result.message)
+                clear_detail_url()
+                st.switch_page(NAV_PAGES["Messages"])
             st.error(result.message)
 
 
@@ -632,8 +686,66 @@ def show_group_event(user, event):
 
 def open_profile(profile_id, my_id):
     """Button callback: go to a user's profile page."""
-    st.session_state.profile_id = profile_id
-    st.session_state.page = "My profile" if profile_id == my_id else "People"
+    destination = "Profile" if profile_id == my_id else "People"
+    source = st.session_state.get("active_page", destination)
+    open_detail("profile", profile_id, destination,
+                query=logic.profile_link_params(profile_id, source))
+
+
+def open_detail(detail_type, item_id, destination, query=None):
+    """Save the source page and open a detail URL on its owning page."""
+    source = st.session_state.get("active_page", destination)
+    history = st.session_state.setdefault("detail_history", [])
+    history.append({"page": source, "query": dict(st.query_params)})
+    st.session_state.came_from_page = source
+    st.query_params.clear()
+    st.query_params.update(query or logic.build_detail_query(detail_type, item_id, source))
+    st.switch_page(NAV_PAGES[destination])
+
+
+def detail_text_link(label, icon, query):
+    """Build an inline text link to a venue or profile detail URL."""
+    destination = "Venues" if "venue" in query else "People"
+    href = f"/{NAV_PAGES[destination].url_path}?{urlencode(query)}"
+    return (
+        f'<a class="detail-text-link" href="{html.escape(href, quote=True)}">'
+        f'<span class="detail-text-icon" aria-hidden="true">{icon}</span>'
+        f'{html.escape(str(label))}</a>'
+    )
+
+
+def clear_detail_url():
+    """Remove detail parameters when returning to a list page."""
+    st.query_params.clear()
+
+
+def go_back_from_detail(default_page):
+    """Return to the page stored when a detail was opened."""
+    allowed = set(ALL_NAV_PAGES)
+    history = st.session_state.get("detail_history", [])
+    previous = history.pop() if history else None
+    st.session_state.detail_history = history
+    destination = previous.get("page") if previous else None
+    if destination is None:
+        destination = logic.parse_return_page(st.query_params, allowed, "")
+    if destination not in allowed:
+        destination = st.session_state.get("came_from_page")
+    if destination not in allowed:
+        destination = logic.parse_return_page(st.query_params, allowed, default_page)
+    clear_detail_url()
+    if previous:
+        st.query_params.update(previous["query"])
+    st.switch_page(ALL_NAV_PAGES[destination])
+
+
+def show_detail_back(default_page):
+    """Render the standard back control for any detail page."""
+    if not st.session_state.get("detail_history"):
+        st.session_state.came_from_page = logic.parse_return_page(
+            st.query_params, set(ALL_NAV_PAGES), default_page
+        )
+    st.button("← Back", key=f"back-{default_page}",
+              on_click=go_back_from_detail, args=(default_page,))
 
 
 def show_notify_button(key, action, args):
@@ -653,22 +765,21 @@ def show_notify_button(key, action, args):
 def open_venue(venue_id):
     """Button callback: go to a venue's page."""
     st.session_state.pop("review_form_venue_id", None)
-    st.session_state.venue_id = venue_id
-    st.session_state.page = "Venues"
+    source = st.session_state.get("active_page", "Venues")
+    open_detail("venue", venue_id, "Venues",
+                query=logic.venue_link_params(venue_id, source))
 
 
 def open_post_in_feed(post_id):
     """Button callback: open a community photo's post in the feed."""
-    st.session_state.feed_post_id = post_id
-    st.session_state.page = "Feed"
+    open_detail("post", post_id, "Feed")
 
 
 def open_chat(user, other_user_id):
     """Button callback: open or start the direct conversation with a user."""
     result = logic.start_app_direct_conversation(user, other_user_id)
     if result.success:
-        st.session_state.conversation_id = result.conversation_id
-        st.session_state.page = "Messages"
+        open_detail("chat", result.conversation_id, "Messages")
     else:
         st.session_state.flash_error = result.message
 
@@ -935,11 +1046,14 @@ def show_profile(user, profile_id):
         follow_col, message_col, _ = st.columns([1, 1, 3])
         if profile["is_followed_by_me"]:
             if follow_col.button("Unfollow", key="unfollow-user"):
-                logic.unfollow_app_user(user, profile["id"])
+                result = logic.unfollow_app_user(user, profile["id"])
+                if result.success:
+                    st.toast(result.message)
                 st.rerun()
         elif follow_col.button("Follow", key="follow-user", type="primary"):
             result = logic.follow_app_user(user, profile["id"])
             if result.success:
+                st.toast(result.message)
                 st.rerun()
             st.error(result.message)
         message_col.button("Message", key="message-user", on_click=open_chat, args=(user, profile["id"]))
@@ -965,12 +1079,6 @@ def show_profile(user, profile_id):
 
 def show_people_page(user):
     """Show user search, or the selected profile."""
-    if st.session_state.get("profile_id") is not None:
-        if st.button("← Search people"):
-            st.session_state.pop("profile_id", None)
-            st.rerun()
-        show_profile(user, st.session_state.profile_id)
-        return
     st.header("People")
     query = st.text_input("Search by username", key="people_search")
     people = logic.search_app_people(user, query)
@@ -1005,35 +1113,51 @@ def show_post_photos(post, key):
 def show_post(user, post, key):
     """Show one post: author, bar, photo, text and time."""
     with st.container(border=True):
-        author_image_col, author_col, venue_col = st.columns([1, 2, 2])
+        author_image_col, header_col = st.columns([1, 11], vertical_alignment="top")
         show_avatar({"username": post["username"], "image_id": post["author_image_id"]},
                     40, author_image_col)
-        author_col.button(display_name(post), key=f"{key}-author-{post['id']}", type="tertiary",
-                          icon=":material/person:", on_click=open_profile, args=(post["user_id"], user["id"]))
+        author_query = logic.profile_link_params(post["user_id"], "Feed")
+        author_html = detail_text_link(display_name(post), "👤", author_query)
         if post["venue_id"] is not None:
-            venue_col.button(post["venue_name"], key=f"{key}-venue-{post['id']}", type="tertiary",
-                             icon=":material/sports_bar:", on_click=open_venue, args=(post["venue_id"],))
+            venue_query = logic.venue_link_params(post["venue_id"], "Feed")
+            venue_html = detail_text_link(post["venue_name"], "🍺", venue_query)
+            header_col.markdown(
+                f"{author_html}<span class=\"post-header-at\">at</span>{venue_html}",
+                unsafe_allow_html=True,
+            )
         else:
-            # A typed-in "Other" location is shown as plain text: there is no venue page to open.
-            venue_col.markdown(f":material/location_on: {html.escape(post['location_name'] or '')}")
+            # A typed-in "Other" location has no venue detail page.
+            place = html.escape(post["location_name"] or "")
+            header_col.markdown(
+                f"{author_html}<span class=\"post-header-at\">at</span>"
+                f"<span>📍 {place}</span>", unsafe_allow_html=True,
+            )
+        header_col.caption(logic.format_post_time(post["created_at"]))
         show_post_photos(post, key)
         if post["text"]:
             st.text(post["text"])
         if post.get("tags"):
             st.caption("with " + ", ".join("@" + tag["username"] for tag in post["tags"]))
-        st.caption(logic.format_post_time(post["created_at"]))
         like_label = "Unlike" if post["liked_by_me"] else "Like"
         if st.button(f"{like_label} · {post['like_count']}", key=f"{key}-like-{post['id']}"):
             result = logic.toggle_app_like(user, post["id"])
             if result.success:
+                st.toast(result.message)
                 st.rerun()
             st.error(result.message)
         comments = logic.get_app_comments(post["id"])
         with st.expander(f"💬 {len(comments)} comments"):
             for comment in comments:
                 author_role = "Bar owner" if comment["role"] == "business" else "Customer"
-                st.caption(f"{comment['username']} · {author_role} · "
-                           f"{logic.format_message_time(comment['created_at'])}")
+                profile_query = logic.profile_link_params(
+                    comment["user_id"], st.session_state.get("active_page", "Feed")
+                )
+                st.markdown(
+                    f"{detail_text_link(comment['username'], '👤', profile_query)} · "
+                    f"{html.escape(author_role)} · "
+                    f"{html.escape(logic.format_message_time(comment['created_at']))}",
+                    unsafe_allow_html=True,
+                )
                 st.text(comment["text"])
                 if comment["user_id"] == user["id"]:
                     if st.button("Delete", key=f"{key}-delete-comment-{comment['id']}"):
@@ -1156,37 +1280,235 @@ def show_venue_community_photos(user, venue_id):
                   on_click=open_post_in_feed, args=(post["id"],))
 
 
+def show_venue_details(user, venue):
+    """Render one venue and its existing related content."""
+    render_venue_card(venue, user, compact=False)
+    hours_col, menu_col = st.columns(2)
+    with hours_col:
+        show_opening_hours(venue["id"], compact=True)
+    with menu_col:
+        show_menu(venue["id"])
+    show_venue_community_photos(user, venue["id"])
+    st.subheader("Posts")
+    with st.expander("Post about this venue", icon=":material/add_a_photo:"):
+        show_post_form(user, "venue", venue_id=venue["id"])
+    show_post_list(user, logic.get_app_venue_posts(venue["id"], user),
+                   "No posts about this venue yet.", "venue")
+
+
+def show_venue_list(user):
+    """Render the map and searchable venue list."""
+    venues = logic.get_venues()
+    map_tab, venues_tab = st.tabs(["Map", "Venues"])
+    with map_tab:
+        if not venues:
+            st.write("No venues are available right now. The venue list could not be loaded.")
+        else:
+            render_map(venues, user)
+    with venues_tab:
+        st.header("Venues")
+        if not venues:
+            st.write("No venues are available right now. The venue list could not be loaded.")
+            return
+        neighbourhoods = ["All"] + sorted({venue["neighbourhood"] for venue in venues})
+        venue_types = ["All"] + sorted({venue["venue_type"] for venue in venues})
+        left, middle, right = st.columns(3)
+        with left:
+            neighbourhood = st.selectbox("Neighbourhood", neighbourhoods, key="venue_neighbourhood")
+        with middle:
+            venue_type = st.selectbox("Type", venue_types, key="venue_type")
+        with right:
+            shows_football = st.toggle("Shows football", key="venue_football")
+        sort_labels = {
+            "Name (A–Z)": "name", "Best overall score": "overall",
+            "Best atmosphere": "atmosphere", "Cheapest Super Bock": "price",
+            "Most reviews": "reviews",
+        }
+        sort_label = st.selectbox("Sort by", list(sort_labels), key="venue_sort")
+        search = st.text_input("Search by name", key="venue_search")
+        matches = logic.find_app_venues(
+            neighbourhood=neighbourhood, venue_type=venue_type,
+            shows_football=shows_football, search=search, sort_by=sort_labels[sort_label],
+        )
+        if not matches:
+            st.write("No venues match your filters.")
+        summaries = logic.get_all_venue_review_summaries()
+        for venue in matches:
+            name_col, area_col, type_col, button_col = st.columns([3, 2, 2, 1])
+            name_col.write(venue["name"])
+            summary = summaries[venue["id"]]
+            name_col.write(f"{summary['overall']:.1f} ★ · {summary['review_count']} reviews" if summary["review_count"] else "No reviews yet")
+            area_col.write(venue["neighbourhood"])
+            type_col.write(venue["venue_type"])
+            button_col.button("View", key=f"venue-{venue['id']}",
+                              on_click=open_venue, args=(venue["id"],))
+
+
+def query_has(key):
+    """Return whether a detail parameter is present in the current URL."""
+    return st.query_params.get(key) is not None
+
+
+def clear_irrelevant_detail(active_key):
+    """Drop a stale detail URL when navigation switches to another section."""
+    keys = ("venue", "user", "post", "chat")
+    if any(query_has(key) for key in keys if key != active_key):
+        st.query_params.clear()
+        st.session_state.pop("detail_history", None)
+        st.session_state.pop("came_from_page", None)
+
+
+def redirect_detail_to_owner(active_page):
+    """Route query links to the registered page that owns their detail type."""
+    destinations = {
+        "venue": "Venues", "user": "People", "post": "Feed", "chat": "Messages",
+    }
+    for key, destination in destinations.items():
+        if key == "user" and active_page == "Profile":
+            continue
+        if query_has(key) and destination != active_page:
+            st.switch_page(NAV_PAGES[destination])
+
+
+def render_not_found(default_page):
+    """Show a safe missing-detail state with a working back button."""
+    show_detail_back(default_page)
+    st.subheader("Not found")
+
+
+def run_feed_page():
+    """Render Feed or a post opened from the feed."""
+    st.session_state.active_page = "Feed"
+    redirect_detail_to_owner("Feed")
+    clear_irrelevant_detail("post")
+    if query_has("post"):
+        post_id = logic.parse_detail_id(st.query_params, "post")
+        post = logic.get_app_post_for_viewer(post_id, user) if post_id else None
+        if post is None:
+            render_not_found("Feed")
+            return
+        show_detail_back("Feed")
+        show_post(user, post, "feed-detail")
+        return
+    show_feed_page(user)
+
+
+def run_venues_page():
+    """Render venue list or a venue detail URL."""
+    st.session_state.active_page = "Venues"
+    redirect_detail_to_owner("Venues")
+    clear_irrelevant_detail("venue")
+    if query_has("venue"):
+        venue_id = logic.parse_detail_id(st.query_params, "venue")
+        venue = logic.get_venue(venue_id) if venue_id else None
+        if venue is None:
+            render_not_found("Venues")
+            return
+        if logic.parse_return_page(st.query_params, set(ALL_NAV_PAGES), "") == "Venues":
+            st.session_state.map_preview_id = venue_id
+        show_detail_back("Venues")
+        show_venue_details(user, venue)
+        return
+    show_venue_list(user)
+
+
+def run_people_page():
+    """Render People or a profile detail URL."""
+    st.session_state.active_page = "People"
+    redirect_detail_to_owner("People")
+    clear_irrelevant_detail("user")
+    if query_has("user"):
+        profile_id = logic.parse_detail_id(st.query_params, "profile")
+        profile = logic.get_app_profile(user, profile_id) if profile_id else None
+        if profile is None:
+            render_not_found("People")
+            return
+        show_detail_back("People")
+        show_profile(user, profile_id)
+        return
+    show_people_page(user)
+
+
+def run_messages_page():
+    """Render Messages or a conversation detail URL."""
+    st.session_state.active_page = "Messages"
+    redirect_detail_to_owner("Messages")
+    clear_irrelevant_detail("chat")
+    if query_has("chat"):
+        conversation_id = logic.parse_detail_id(st.query_params, "chat")
+        conversation = logic.get_app_conversation_details(user, conversation_id) if conversation_id else None
+        if conversation is None:
+            render_not_found("Messages")
+            return
+        show_open_conversation(user, conversation_id)
+        return
+    show_messages_page(user)
+
+
+def run_profile_page():
+    """Render the signed-in user's profile or a profile detail URL."""
+    st.session_state.active_page = "Profile"
+    redirect_detail_to_owner("Profile")
+    clear_irrelevant_detail("user")
+    if query_has("user"):
+        profile_id = logic.parse_detail_id(st.query_params, "profile")
+        profile = logic.get_app_profile(user, profile_id) if profile_id else None
+        if profile is None:
+            render_not_found("Profile")
+            return
+        show_detail_back("Profile")
+        show_profile(user, profile_id)
+        return
+    show_profile(user, user["id"])
+
+
+NAV_PAGES = {
+    "Feed": st.Page(run_feed_page, title="Feed", icon="🏠", url_path="feed", default=True),
+    "Venues": st.Page(run_venues_page, title="Venues", icon="🗺️", url_path="venues"),
+    "People": st.Page(run_people_page, title="People", icon="👥", url_path="people"),
+    "Messages": st.Page(run_messages_page, title="Messages", icon="💬", url_path="messages"),
+    "Profile": st.Page(run_profile_page, title="Profile", icon="👤", url_path="profile"),
+}
+
+
+def logout():
+    """Clear navigation state and sign out."""
+    st.session_state.pop("came_from_page", None)
+    st.session_state.pop("active_page", None)
+    st.session_state.pop("detail_history", None)
+    st.query_params.clear()
+    st.logout()
+
 ALERT_ICONS = {"like": ":material/favorite:", "comment": ":material/chat_bubble:", "tag": ":material/sell:",
                "group_added": ":material/group_add:", "event": ":material/event:", "message": ":material/mail:"}
 
 
 def open_conversation(conversation_id):
     """Button callback: open a conversation on the Messages page."""
-    st.session_state.conversation_id = conversation_id
-    st.session_state.page = "Messages"
+    open_detail("chat", conversation_id, "Messages")
 
 
 def go_to_notifications():
     """Button callback: open the Notifications page."""
-    st.session_state.page = "Notifications"
+    st.switch_page(NOTIFICATIONS_PAGE)
 
 
 @st.fragment(run_every=10)
 def show_alert_bell(user):
     """Check for new notifications every 10 seconds, pop them up and show the unread count."""
-    reading_chat = (st.session_state.get("page") == "Messages"
-                    and st.session_state.get("conversation_id") is not None)
+    conversation_id = logic.parse_detail_id(st.query_params, "chat")
+    reading_chat = (st.session_state.get("active_page") == "Messages"
+                    and conversation_id is not None)
     for alert in logic.take_app_new_alerts(user)[-3:]:
         # No pop-up for messages in the chat the user is looking at right now.
-        if reading_chat and alert["kind"] == "message" and alert["conversation_id"] == st.session_state.conversation_id:
+        if reading_chat and alert["kind"] == "message" and alert["conversation_id"] == conversation_id:
             continue
         st.toast(alert["text"], icon=ALERT_ICONS.get(alert["kind"]), duration="long")
     # On the Notifications page everything shown is being read, so no "new" count there.
-    unread = 0 if st.session_state.get("page") == "Notifications" else logic.count_app_unread_alerts(user)
+    unread = 0 if st.session_state.get("active_page") == "Notifications" else logic.count_app_unread_alerts(user)
     label = f"Notifications · {unread} new" if unread else "Notifications"
-    if st.button(label, icon=":material/notifications:", key="alert-bell",
-                 type="primary" if unread else "secondary", on_click=go_to_notifications):
-        st.rerun(scope="app")
+    st.button(label, icon=":material/notifications:", key="alert-bell",
+              type="primary" if unread else "secondary", on_click=go_to_notifications)
 
 
 def show_notifications_page(user):
@@ -1209,97 +1531,37 @@ def show_notifications_page(user):
     logic.mark_app_alerts_read(user)
 
 
-PAGES = ["Feed", "Venues", "People", "Messages", "Notifications", "My profile"]
+
+
+
+def run_notifications_page():
+    """Show notifications in the hidden route used by the notification bell."""
+    st.session_state.active_page = "Notifications"
+    show_notifications_page(user)
+
+
+NOTIFICATIONS_PAGE = st.Page(
+    run_notifications_page, title="Notifications", icon="🔔",
+    url_path="notifications", visibility="hidden",
+)
+ALL_NAV_PAGES = {**NAV_PAGES, "Notifications": NOTIFICATIONS_PAGE}
+
 
 if logic.can_view_venues(user):
     with st.sidebar:
+        show_avatar(user, 48)
         st.write(user["username"])
-        st.write(f"Role: {user['role'].title()}")
-        page = st.radio("Go to", PAGES, key="page")
+        st.caption(user["role"].title())
+        navigation = st.navigation(
+            [*NAV_PAGES.values(), NOTIFICATIONS_PAGE], position="sidebar"
+        )
+        st.session_state.active_page = navigation.title
         show_alert_bell(user)
-        if st.button("Log out"):
-            for key in ("venue_id", "conversation_id", "profile_id"):
-                st.session_state.pop(key, None)
-            st.logout()
-
+        st.markdown(
+            "<style>.st-key-sidebar_logout{position:fixed;bottom:1rem;width:14rem}</style>",
+            unsafe_allow_html=True,
+        )
+        st.button("Log out", key="sidebar_logout", on_click=logout, width="stretch")
     if "flash_error" in st.session_state:
         st.error(st.session_state.pop("flash_error"))
-    if page == "Feed":
-        show_feed_page(user)
-        st.stop()
-    if page == "Messages":
-        show_messages_page(user)
-        st.stop()
-    if page == "People":
-        show_people_page(user)
-        st.stop()
-    if page == "My profile":
-        show_profile(user, user["id"])
-        st.stop()
-    if page == "Notifications":
-        show_notifications_page(user)
-        st.stop()
-
-    if st.session_state.get("venue_id") is not None:
-        selected = logic.get_venue(st.session_state.venue_id)
-        if selected is not None:
-            render_venue_card(selected, user, compact=False)
-            hours_col, menu_col = st.columns(2)
-            with hours_col:
-                show_opening_hours(selected["id"], compact=True)
-            with menu_col:
-                show_menu(selected["id"])
-            show_venue_community_photos(user, selected["id"])
-            st.subheader("Posts")
-            with st.expander("Post about this venue", icon=":material/add_a_photo:"):
-                show_post_form(user, "venue", venue_id=selected["id"])
-            show_post_list(user, logic.get_app_venue_posts(selected["id"], user), "No posts about this venue yet.", "venue")
-        if st.button("Back to venues"):
-            st.session_state.pop("venue_id", None)
-            st.rerun()
-    else:
-        venues = logic.get_venues()
-        map_tab, venues_tab = st.tabs(["Map", "Venues"])
-        with map_tab:
-            if not venues:
-                st.write("No venues are available right now. The venue list could not be loaded.")
-            else:
-                render_map(venues, user)
-        with venues_tab:
-            st.header("Venues")
-            if not venues:
-                st.write("No venues are available right now. The venue list could not be loaded.")
-            else:
-                neighbourhoods = ["All"] + sorted({venue["neighbourhood"] for venue in venues})
-                venue_types = ["All"] + sorted({venue["venue_type"] for venue in venues})
-                left, middle, right = st.columns(3)
-                with left:
-                    neighbourhood = st.selectbox("Neighbourhood", neighbourhoods)
-                with middle:
-                    venue_type = st.selectbox("Type", venue_types)
-                with right:
-                    shows_football = st.toggle("Shows football")
-                sort_labels = {
-                    "Name (A–Z)": "name", "Best overall score": "overall",
-                    "Best atmosphere": "atmosphere", "Cheapest Super Bock": "price",
-                    "Most reviews": "reviews",
-                }
-                sort_label = st.selectbox("Sort by", list(sort_labels))
-                search = st.text_input("Search by name")
-                matches = logic.find_app_venues(
-                    neighbourhood=neighbourhood, venue_type=venue_type,
-                    shows_football=shows_football, search=search, sort_by=sort_labels[sort_label],
-                )
-                if not matches:
-                    st.write("No venues match your filters.")
-                summaries = logic.get_all_venue_review_summaries()
-                for venue in matches:
-                    name_col, area_col, type_col, button_col = st.columns([3, 2, 2, 1])
-                    name_col.write(venue["name"])
-                    summary = summaries[venue["id"]]
-                    name_col.write(f"{summary['overall']:.1f} ★ · {summary['review_count']} reviews" if summary["review_count"] else "No reviews yet")
-                    area_col.write(venue["neighbourhood"])
-                    type_col.write(venue["venue_type"])
-                    if button_col.button("View", key=f"venue-{venue['id']}"):
-                        st.session_state.venue_id = venue["id"]
-                        st.rerun()
+    navigation.run()

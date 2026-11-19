@@ -155,6 +155,69 @@ def build_map_rows(venues, summaries, minimum_rating="All"):
     return rows
 
 
+DETAIL_QUERY_KEYS = {"venue": "venue", "profile": "user", "post": "post", "chat": "chat"}
+PAGE_SOURCE_VALUES = {
+    "Feed": "feed", "Venues": "venues", "People": "people",
+    "Messages": "messages", "Profile": "profile", "Notifications": "notifications",
+}
+
+
+def build_detail_query(detail_type, item_id, source=None):
+    """Build query parameters for a shareable detail page."""
+    if detail_type not in DETAIL_QUERY_KEYS or not str(item_id).isdigit():
+        raise ValueError("Unknown detail type or invalid id")
+    query = {DETAIL_QUERY_KEYS[detail_type]: str(int(item_id))}
+    if source:
+        query["from"] = str(source)
+    return query
+
+
+def venue_link_params(venue_id, source):
+    """Build the shared query parameters for a venue link."""
+    query = build_detail_query("venue", venue_id)
+    query["from"] = PAGE_SOURCE_VALUES.get(source, str(source).casefold())
+    return query
+
+
+def profile_link_params(user_id, source):
+    """Build the shared query parameters for a profile link."""
+    query = build_detail_query("profile", user_id)
+    query["from"] = PAGE_SOURCE_VALUES.get(source, str(source).casefold())
+    return query
+
+
+def map_preview_selection(selected_objects, visible_ids, previous_id=None):
+    """Return a visible selected pin id, preserving its preview when possible."""
+    if selected_objects:
+        selected_id = selected_objects[0].get("id")
+        if selected_id in visible_ids:
+            return selected_id
+    return previous_id if previous_id in visible_ids else None
+
+
+def parse_detail_id(params, detail_type):
+    """Parse a positive detail id from query parameters, or return None."""
+    key = DETAIL_QUERY_KEYS.get(detail_type)
+    if key is None:
+        return None
+    value = params.get(key)
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    try:
+        item_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return item_id if item_id > 0 else None
+
+
+def parse_return_page(params, allowed_pages, default_page):
+    """Return a valid source page from query parameters or its default."""
+    source = params.get("from")
+    if isinstance(source, str):
+        source = {value: page for page, value in PAGE_SOURCE_VALUES.items()}.get(source, source)
+    return source if source in allowed_pages else default_page
+
+
 def map_style_url(name):
     """Return the Mapbox style URL for a named map style."""
     return MAP_STYLES.get(name, MAP_STYLES["Light"])
@@ -439,6 +502,7 @@ def review_preview(reviews, now=None):
     preview = []
     for review in reviews[:3]:
         preview.append({
+            "user_id": review.get("user_id"),
             "username": review["username"],
             "rating": review_rating(review),
             "comment": (review.get("comment") or "").strip()[:140],

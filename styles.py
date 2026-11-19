@@ -63,6 +63,28 @@ MAP_LEGEND_HTML = """
 </div>
 """
 
+POST_HEADER_LINK_CSS = """
+<style>
+.detail-text-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: inherit !important;
+    font-weight: 700;
+    text-decoration: none !important;
+}
+.detail-text-link:hover {
+    text-decoration: underline !important;
+}
+.detail-text-icon {
+    font-size: 0.82em;
+}
+.post-header-at {
+    margin: 0 4px;
+}
+</style>
+"""
+
 VENUE_WEATHER_CSS = """
 <style>
 .st-key-venue_weather_box {
@@ -104,9 +126,6 @@ THEME_CSS = """
         #FBF3E4 218px) no-repeat local;
   }
 }
-/* The top bar (Deploy/menu) stays visible; a solid red strip keeps it readable after scrolling. */
-[data-testid="stHeader"] { background: #B80F24; }
-[data-testid="stHeader"] * { color: #FFF4DC !important; }
 h1, h1 span { color: #FFFFFF !important; text-shadow: 0 2px 0 rgba(90, 10, 20, 0.35); }
 h1 { margin-bottom: 1.6rem !important; }
 h2, h3 { color: #3A1E08 !important; }

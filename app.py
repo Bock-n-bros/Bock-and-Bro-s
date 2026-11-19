@@ -404,7 +404,7 @@ def show_conversation_avatar(conversation, size, target):
     """Show the other person's picture, or a shared badge for a group."""
     if conversation["is_group"]:
         show_initial_circle("Group", size, target,
-                            background="#f7e2bd", colour="#7a4a00")
+                            background="#C8102E", colour="#FFF4DC")
         return
     show_avatar({"username": conversation["title"],
                  "image_id": conversation.get("other_image_id")}, size, target)
@@ -708,8 +708,8 @@ def show_person_list(user, people, empty_text, key):
                           on_click=open_profile, args=(person["id"], user["id"]))
 
 
-def show_initial_circle(text, size=48, target=None, background="#e7edf2",
-                        colour="#263746"):
+def show_initial_circle(text, size=48, target=None, background="#F3E7D0",
+                        colour="#2B1D14"):
     """Show one letter in a coloured circle, used when there is no picture."""
     if target is None:
         target = st

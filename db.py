@@ -209,13 +209,35 @@ def _table_statements(backend):
             sender_id INTEGER NOT NULL REFERENCES users(id), recipient_id INTEGER NOT NULL REFERENCES users(id),
             sent_at TEXT NOT NULL
         )""",
+        f"""CREATE TABLE IF NOT EXISTS post_images (
+            id {identity}, post_id INTEGER NOT NULL REFERENCES posts(id),
+            image_id INTEGER NOT NULL REFERENCES images(id), position INTEGER NOT NULL,
+            UNIQUE (post_id, position)
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS venue_owners (
+            id {identity}, venue_id INTEGER NOT NULL UNIQUE REFERENCES venues(id),
+            user_id INTEGER NOT NULL UNIQUE REFERENCES users(id), claimed_at TEXT NOT NULL
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS venue_hours (
+            id {identity}, venue_id INTEGER NOT NULL REFERENCES venues(id),
+            weekday INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
+            opens_at TEXT, closes_at TEXT,
+            closed INTEGER NOT NULL DEFAULT 0 CHECK (closed IN (0, 1)),
+            updated_at TEXT NOT NULL, UNIQUE (venue_id, weekday)
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS menu_items (
+            id {identity}, venue_id INTEGER NOT NULL REFERENCES venues(id),
+            name TEXT NOT NULL, price REAL NOT NULL, position INTEGER NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )""",
     ]
 
 
 def _rls_table_names():
     """Return every application table that needs Postgres row-level security."""
     return ("images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
-            "conversations", "conversation_members", "messages", "events", "event_responses", "notifications")
+            "conversations", "conversation_members", "messages", "events", "event_responses", "notifications",
+            "post_images", "venue_owners", "venue_hours", "menu_items")
 
 
 def init_db():
@@ -233,6 +255,7 @@ def init_db():
                 _execute(connection, backend, f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         _ensure_user_image_column(connection, backend)
         _ensure_email_notifications_column(connection, backend)
+        _ensure_post_images_backfill(connection, backend)
     _initialized_key = (backend, setting)
 
 
@@ -259,6 +282,14 @@ def _ensure_email_notifications_column(connection, backend):
     if "email_notifications" not in columns:
         _execute(connection, backend,
             "ALTER TABLE users ADD COLUMN email_notifications INTEGER NOT NULL DEFAULT 1 CHECK (email_notifications IN (0, 1))")
+
+
+def _ensure_post_images_backfill(connection, backend):
+    """Copy single photos written before this feature into the post_images table."""
+    _execute(connection, backend,
+        "INSERT INTO post_images (post_id, image_id, position) "
+        "SELECT p.id, p.image_id, 0 FROM posts p WHERE p.image_id IS NOT NULL "
+        "AND NOT EXISTS (SELECT 1 FROM post_images pi WHERE pi.post_id = p.id)")
 
 
 def _insert(connection, backend, sql, parameters):
@@ -770,6 +801,104 @@ def count_venue_followers(venue_id):
     return _query("SELECT COUNT(*) FROM venue_follows WHERE venue_id = ?", (venue_id,)).fetchone()[0]
 
 
+def claim_venue(user_id, venue_id, now=None):
+    """Record a business user as the owner of a venue."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        return _insert(connection, backend,
+            "INSERT INTO venue_owners (venue_id, user_id, claimed_at) VALUES (?, ?, ?)",
+            (venue_id, user_id, _iso_timestamp(now)))
+
+
+def release_venue(user_id):
+    """Remove a user's ownership, so another account can claim the venue."""
+    _query("DELETE FROM venue_owners WHERE user_id = ?", (user_id,))
+
+
+def get_venue_owner_id(venue_id):
+    """Return the user id that owns a venue, if any."""
+    row = _query("SELECT user_id FROM venue_owners WHERE venue_id = ?", (venue_id,)).fetchone()
+    return row[0] if row else None
+
+
+def get_owned_venue_id(user_id):
+    """Return the venue a user owns, if any."""
+    row = _query("SELECT venue_id FROM venue_owners WHERE user_id = ?", (user_id,)).fetchone()
+    return row[0] if row else None
+
+
+def get_venue_hours(venue_id):
+    """Return a venue's opening hours, one row per weekday that has been set."""
+    cursor = _query("SELECT weekday, opens_at, closes_at, closed FROM venue_hours "
+                    "WHERE venue_id = ? ORDER BY weekday", (venue_id,))
+    return [dict(zip(("weekday", "opens_at", "closes_at", "closed"), row))
+            for row in cursor.fetchall()]
+
+
+def save_venue_hours(venue_id, weekday, opens_at, closes_at, closed, now=None):
+    """Insert or update one weekday's opening hours."""
+    backend, _ = _backend()
+    timestamp = _iso_timestamp(now)
+    with _connect() as connection:
+        existing = _execute(connection, backend,
+            "SELECT id FROM venue_hours WHERE venue_id = ? AND weekday = ?",
+            (venue_id, weekday)).fetchone()
+        if existing:
+            _execute(connection, backend,
+                "UPDATE venue_hours SET opens_at = ?, closes_at = ?, closed = ?, updated_at = ? "
+                "WHERE id = ?", (opens_at, closes_at, 1 if closed else 0, timestamp, existing[0]))
+            return existing[0]
+        return _insert(connection, backend,
+            "INSERT INTO venue_hours (venue_id, weekday, opens_at, closes_at, closed, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (venue_id, weekday, opens_at, closes_at, 1 if closed else 0, timestamp))
+
+
+def get_menu_items(venue_id):
+    """Return a venue's menu in the order the owner arranged it."""
+    cursor = _query("SELECT id, venue_id, name, price, position FROM menu_items "
+                    "WHERE venue_id = ? ORDER BY position, id", (venue_id,))
+    return [dict(zip(("id", "venue_id", "name", "price", "position"), row))
+            for row in cursor.fetchall()]
+
+
+def get_menu_item(item_id):
+    """Find one menu item for an ownership check."""
+    row = _query("SELECT id, venue_id, name, price, position FROM menu_items WHERE id = ?",
+                 (item_id,)).fetchone()
+    return _row_dict(row, ("id", "venue_id", "name", "price", "position"))
+
+
+def add_menu_item(venue_id, name, price, now=None):
+    """Add one item to the end of a venue's menu."""
+    backend, _ = _backend()
+    timestamp = _iso_timestamp(now)
+    with _connect() as connection:
+        highest = _execute(connection, backend,
+            "SELECT position FROM menu_items WHERE venue_id = ? ORDER BY position DESC",
+            (venue_id,)).fetchone()
+        position = (highest[0] + 1) if highest else 0
+        return _insert(connection, backend,
+            "INSERT INTO menu_items (venue_id, name, price, position, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)", (venue_id, name, price, position, timestamp, timestamp))
+
+
+def update_menu_item(item_id, name, price, now=None):
+    """Change one menu item's name and price."""
+    _query("UPDATE menu_items SET name = ?, price = ?, updated_at = ? WHERE id = ?",
+           (name, price, _iso_timestamp(now), item_id))
+
+
+def delete_menu_item(item_id):
+    """Remove one item from a menu after logic has checked the owner."""
+    _query("DELETE FROM menu_items WHERE id = ?", (item_id,))
+
+
+def count_menu_items(venue_id):
+    """Count the items on a venue's menu."""
+    return len(get_menu_items(venue_id))
+
+
 def _post_query(where, values, limit):
     """Fetch post metadata without loading image contents."""
     cursor = _query("SELECT p.id, p.user_id, u.username, u.role, u.image_id AS author_image_id, p.venue_id, v.name AS venue_name, "
@@ -807,22 +936,47 @@ def _prepare_image(data, mime_type, max_width=1200):
     return output.getvalue()
 
 
-def create_post(user_id, venue_id, text, image_bytes=None, image_name=None, now=None):
-    """Save a post and its optional image in one transaction."""
-    image_extension = Path(image_name or "").suffix.casefold() if image_bytes is not None else None
-    mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}.get(image_extension)
-    cooked = _prepare_image(image_bytes, mime_type) if image_bytes is not None else None
+def _cook_photo(image_bytes, image_name):
+    """Check one upload and return its compressed bytes and type."""
+    extension = Path(image_name or "").suffix.casefold()
+    mime_type = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}.get(extension)
+    return _prepare_image(image_bytes, mime_type), mime_type
+
+
+def create_post(user_id, venue_id, text, image_bytes=None, image_name=None, now=None,
+                images=None):
+    """Save a post and its photos in one transaction.
+
+    `images` is a list of (bytes, filename) pairs, newest feature; `image_bytes` and
+    `image_name` are the single-photo form kept for earlier callers. Every photo is
+    checked before anything is written, so a bad file saves nothing.
+    """
+    photos = list(images) if images else ([(image_bytes, image_name)] if image_bytes is not None else [])
+    cooked = [_cook_photo(data, name) for data, name in photos]
     backend, _ = _backend()
     timestamp = _iso_timestamp(now)
     with _connect() as connection:
-        image_id = None
-        if image_bytes is not None:
-            image_id = _insert(connection, backend,
+        image_ids = [
+            _insert(connection, backend,
                 "INSERT INTO images (bytes, mime_type, byte_size, created_at) VALUES (?, ?, ?, ?)",
-                (cooked, mime_type, len(cooked), timestamp))
-        return _insert(connection, backend,
+                (data, mime_type, len(data), timestamp))
+            for data, mime_type in cooked
+        ]
+        post_id = _insert(connection, backend,
             "INSERT INTO posts (user_id, venue_id, text, image_id, created_at) VALUES (?, ?, ?, ?, ?)",
-            (user_id, venue_id, text, image_id, timestamp))
+            (user_id, venue_id, text, image_ids[0] if image_ids else None, timestamp))
+        for position, image_id in enumerate(image_ids):
+            _execute(connection, backend,
+                "INSERT INTO post_images (post_id, image_id, position) VALUES (?, ?, ?)",
+                (post_id, image_id, position))
+        return post_id
+
+
+def get_post_image_ids(post_id):
+    """Return a post's photo ids in the order they were uploaded."""
+    cursor = _query("SELECT image_id FROM post_images WHERE post_id = ? ORDER BY position",
+                    (post_id,))
+    return [row[0] for row in cursor.fetchall()]
 
 
 def get_post_image(image_id):
@@ -880,7 +1034,9 @@ def _delete_unused_image(connection, backend, image_id):
     if image_id is not None:
         _execute(connection, backend, "DELETE FROM images WHERE id = ? "
             "AND NOT EXISTS (SELECT 1 FROM posts WHERE posts.image_id = images.id) "
-            "AND NOT EXISTS (SELECT 1 FROM users WHERE users.image_id = images.id)", (image_id,))
+            "AND NOT EXISTS (SELECT 1 FROM users WHERE users.image_id = images.id) "
+            "AND NOT EXISTS (SELECT 1 FROM post_images WHERE post_images.image_id = images.id)",
+            (image_id,))
 
 
 def get_image_file(image_id):
@@ -933,6 +1089,25 @@ def get_post_by_id(post_id):
 def get_post_details(post_id):
     """Fetch one post's display metadata without reading image bytes."""
     return _post_query("WHERE p.id = ?", (post_id,), 1)
+
+
+def delete_post(post_id):
+    """Delete a post with its comments and likes after logic has checked its author."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        current = _execute(connection, backend,
+            "SELECT image_id FROM posts WHERE id = ?", (post_id,)).fetchone()
+        if current is None:
+            return False
+        attached = [row[0] for row in _execute(connection, backend,
+            "SELECT image_id FROM post_images WHERE post_id = ?", (post_id,)).fetchall()]
+        _execute(connection, backend, "DELETE FROM comments WHERE post_id = ?", (post_id,))
+        _execute(connection, backend, "DELETE FROM likes WHERE post_id = ?", (post_id,))
+        _execute(connection, backend, "DELETE FROM post_images WHERE post_id = ?", (post_id,))
+        _execute(connection, backend, "DELETE FROM posts WHERE id = ?", (post_id,))
+        for image_id in {current[0], *attached} - {None}:
+            _delete_unused_image(connection, backend, image_id)
+        return True
 
 
 def add_comment(post_id, user_id, text, now=None):

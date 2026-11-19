@@ -733,6 +733,160 @@ def show_avatar(person, size=48, target=None):
     show_initial_circle(avatar["initial"], size, target)
 
 
+def show_opening_hours(venue_id, compact=False):
+    """Show a venue's week. Today's row is marked, so it reads at a glance."""
+    if not logic.app_has_opening_hours(venue_id):
+        return False
+    today = logic.app_current_weekday()
+    st.markdown("**Opening hours**")
+    for day in logic.get_app_opening_hours(venue_id):
+        day_col, time_col = st.columns([1, 1])
+        label = day["name"]
+        value = day["text"]
+        if day["weekday"] == today:
+            day_col.markdown(f"**{label}** · today")
+            time_col.markdown(f"**{value}**")
+        elif compact:
+            day_col.caption(label)
+            time_col.caption(value)
+        else:
+            day_col.write(label)
+            time_col.write(value)
+    return True
+
+
+def show_menu(venue_id):
+    """Show a venue's menu with prices."""
+    items = logic.get_app_menu(venue_id)
+    if not items:
+        return False
+    st.markdown("**Menu**")
+    for item in items:
+        name_col, price_col = st.columns([3, 1])
+        name_col.text(item["name"])
+        price_col.write(f"{item['price']:.2f} €")
+    return True
+
+
+def show_menu_editor(user, venue_id):
+    """Let the bar that manages a venue change its menu, line by line."""
+    st.caption("Add, change or remove items. Customers see this on your bar's page.")
+    for item in logic.get_app_menu(venue_id):
+        name_col, price_col, save_col, remove_col = st.columns([4, 2, 1, 1],
+                                                               vertical_alignment="bottom")
+        name = name_col.text_input("Item", value=item["name"],
+                                   max_chars=logic.MAX_MENU_NAME_LENGTH,
+                                   key=f"menu-name-{item['id']}")
+        price = price_col.number_input("Price (€)", value=float(item["price"]),
+                                       min_value=logic.MIN_MENU_PRICE,
+                                       max_value=logic.MAX_MENU_PRICE, step=0.10,
+                                       format="%.2f", key=f"menu-price-{item['id']}")
+        if save_col.button("Save", key=f"menu-save-{item['id']}"):
+            result = logic.update_app_menu_item(user, item["id"], name, price)
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+        if remove_col.button("Remove", key=f"menu-remove-{item['id']}"):
+            result = logic.delete_app_menu_item(user, item["id"])
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+    with st.form(f"add-menu-item-{venue_id}", clear_on_submit=True):
+        new_col, price_col = st.columns([4, 2])
+        new_name = new_col.text_input("New item", max_chars=logic.MAX_MENU_NAME_LENGTH)
+        new_price = price_col.number_input("Price (€)", min_value=logic.MIN_MENU_PRICE,
+                                           max_value=logic.MAX_MENU_PRICE, value=2.50,
+                                           step=0.10, format="%.2f")
+        added = st.form_submit_button("Add to menu", type="primary")
+    if added:
+        result = logic.add_app_menu_item(user, venue_id, new_name, new_price)
+        if result.success:
+            st.rerun()
+        st.error(result.message)
+
+
+def show_hours_editor(user, venue_id):
+    """Let the bar that manages a venue set its opening hours, one day at a time."""
+    st.caption("A closing time before the opening time means you stay open past "
+               "midnight, which is fine.")
+    saved = {day["weekday"]: day for day in logic.get_app_opening_hours(venue_id)}
+    for weekday, name in enumerate(logic.WEEKDAY_NAMES):
+        day = saved[weekday]
+        with st.form(f"hours-{venue_id}-{weekday}"):
+            name_col, open_col, close_col, closed_col, save_col = st.columns(
+                [2, 2, 2, 2, 1], vertical_alignment="bottom")
+            name_col.write(name)
+            opens = open_col.time_input("Opens", value=_clock_value(day["opens_at"], time(16, 0)),
+                                        key=f"opens-{venue_id}-{weekday}", step=900)
+            closes = close_col.time_input("Closes", value=_clock_value(day["closes_at"], time(2, 0)),
+                                          key=f"closes-{venue_id}-{weekday}", step=900)
+            is_closed = closed_col.checkbox("Closed", value=day["closed"],
+                                            key=f"closed-{venue_id}-{weekday}")
+            submitted = save_col.form_submit_button("Save")
+        if submitted:
+            result = logic.set_app_venue_hours(user, venue_id, weekday, opens, closes, is_closed)
+            if result.success:
+                st.toast(result.message)
+                st.rerun()
+            st.error(result.message)
+
+
+def _clock_value(stored, fallback):
+    """Turn a stored 'HH:MM' string into a time for the picker."""
+    if not stored:
+        return fallback
+    hour, _, minute = stored.partition(":")
+    return time(int(hour), int(minute))
+
+
+def show_bar_profile_details(user, profile):
+    """Show the bar an account manages: its name, opening hours and menu."""
+    if profile["role"] != "business":
+        return
+    venue = logic.get_app_owned_venue(profile)
+    if venue is None:
+        if profile["is_me"]:
+            st.info("You have not chosen which bar you manage yet.")
+        return
+    with st.container(border=True):
+        st.button(venue["name"], key=f"profile-venue-{venue['id']}", type="tertiary",
+                  icon=":material/sports_bar:", on_click=open_venue, args=(venue["id"],))
+        st.caption(f"{venue['neighbourhood']} · {venue['address']}")
+        if not show_opening_hours(venue["id"], compact=True):
+            st.caption("Opening hours not added yet.")
+        show_menu(venue["id"])
+
+
+def show_bar_management(user, profile):
+    """Show the owner's own tools: choosing a bar, its menu and its hours."""
+    if not profile["is_me"] or profile["role"] != "business":
+        return
+    venue = logic.get_app_owned_venue(user)
+    if venue is None:
+        with st.expander("Choose the bar you manage", icon=":material/storefront:"):
+            venues = {item["id"]: item["name"] for item in logic.get_venues()}
+            chosen = st.selectbox("Your bar", list(venues), index=None,
+                                  format_func=venues.get, placeholder="Choose your bar")
+            st.caption("Pick the bar you run. You can change this later.")
+            if st.button("This is my bar", key="claim-venue", type="primary"):
+                result = logic.claim_app_venue(user, chosen)
+                if result.success:
+                    st.rerun()
+                st.error(result.message)
+        return
+    with st.expander("Menu", icon=":material/restaurant_menu:"):
+        show_menu_editor(user, venue["id"])
+    with st.expander("Opening hours", icon=":material/schedule:"):
+        show_hours_editor(user, venue["id"])
+    with st.expander("Bar settings", icon=":material/settings:"):
+        st.caption(f"You manage {venue['name']}.")
+        if st.button("I no longer manage this bar", key="release-venue"):
+            result = logic.release_app_venue(user)
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+
+
 def show_profile(user, profile_id):
     """Show a profile with counts, follow and message buttons and the four lists."""
     profile = logic.get_app_profile(user, profile_id)
@@ -749,6 +903,8 @@ def show_profile(user, profile_id):
         notes.append("Follows you")
     if notes:
         st.caption(" · ".join(notes))
+    show_bar_profile_details(user, profile)
+    show_bar_management(user, profile)
 
     if profile["is_me"]:
         with st.form("profile-picture-form", clear_on_submit=True):
@@ -832,6 +988,29 @@ def show_people_page(user):
     show_person_list(user, people, "", "search")
 
 
+def show_post_photos(post, key):
+    """Show a post's photos: one full width, several side by side in a grid."""
+    photo_ids = logic.get_app_post_photos(post)
+    if not photo_ids:
+        return
+    images = [(photo_id, logic.get_app_image_bytes(photo_id)) for photo_id in photo_ids]
+    found = [(photo_id, data) for photo_id, data in images if data is not None]
+    if not found:
+        st.caption("Photo unavailable")
+        return
+    if len(found) == 1:
+        st.image(found[0][1], width="stretch")
+    else:
+        for row_start in range(0, len(found), 2):
+            row = found[row_start:row_start + 2]
+            columns = st.columns(2)
+            for column, (photo_id, data) in zip(columns, row):
+                column.image(data, width="stretch")
+        st.caption(f"{len(found)} photos")
+    if len(found) < len(images):
+        st.caption("Some photos are unavailable")
+
+
 def show_post(user, post, key):
     """Show one post: author, bar, photo, text and time."""
     with st.container(border=True):
@@ -842,12 +1021,7 @@ def show_post(user, post, key):
                           icon=":material/person:", on_click=open_profile, args=(post["user_id"], user["id"]))
         venue_col.button(post["venue_name"], key=f"{key}-venue-{post['id']}", type="tertiary",
                          icon=":material/sports_bar:", on_click=open_venue, args=(post["venue_id"],))
-        if post["image_id"]:
-            image_bytes = logic.get_app_post_image(post)
-            if image_bytes is not None:
-                st.image(image_bytes, width="stretch")
-            else:
-                st.caption("Photo unavailable")
+        show_post_photos(post, key)
         if post["text"]:
             st.text(post["text"])
         st.caption(logic.format_post_time(post["created_at"]))
@@ -878,6 +1052,33 @@ def show_post(user, post, key):
                 if result.success:
                     st.rerun()
                 st.error(result.message)
+        if post["user_id"] == user["id"]:
+            show_delete_post_controls(user, post, key)
+
+
+def show_delete_post_controls(user, post, key):
+    """Let the author delete their own post, after confirming once."""
+    confirming = f"{key}-confirm-delete-{post['id']}"
+    if not st.session_state.get(confirming):
+        if st.button("Delete post", key=f"{key}-delete-{post['id']}",
+                     icon=":material/delete:"):
+            st.session_state[confirming] = True
+            st.rerun()
+        return
+    st.warning("Delete this post? Its photo, comments and likes go with it. "
+               "This cannot be undone.")
+    delete_col, cancel_col = st.columns(2)
+    if delete_col.button("Yes, delete", key=f"{key}-delete-yes-{post['id']}",
+                         type="primary", width="stretch"):
+        result = logic.delete_app_post(user, post["id"])
+        st.session_state.pop(confirming, None)
+        if result.success:
+            st.rerun()
+        st.error(result.message)
+    if cancel_col.button("Keep it", key=f"{key}-delete-no-{post['id']}",
+                         width="stretch"):
+        st.session_state.pop(confirming, None)
+        st.rerun()
 
 
 def show_post_form(user, key, venue_id=None):
@@ -890,12 +1091,13 @@ def show_post_form(user, key, venue_id=None):
         else:
             chosen_venue = venue_id
         text = st.text_area("What's happening?", max_chars=logic.MAX_POST_LENGTH)
-        photo = st.file_uploader("Photo (optional)", type=logic.IMAGE_TYPES)
+        photos = st.file_uploader(
+            f"Photos (optional, up to {logic.MAX_POST_PHOTOS})",
+            type=logic.IMAGE_TYPES, accept_multiple_files=True)
         submitted = st.form_submit_button("Post", type="primary")
     if submitted:
-        result = logic.create_app_post(user, chosen_venue, text,
-                                       photo.getvalue() if photo else None,
-                                       photo.name if photo else None)
+        uploads = [(photo.getvalue(), photo.name) for photo in photos or []]
+        result = logic.create_app_post(user, chosen_venue, text, images=uploads)
         if result.success:
             st.toast(result.message)
         else:
@@ -974,6 +1176,11 @@ if logic.can_view_venues(user):
         selected = logic.get_venue(st.session_state.venue_id)
         if selected is not None:
             render_venue_card(selected, user, compact=False)
+            hours_col, menu_col = st.columns(2)
+            with hours_col:
+                show_opening_hours(selected["id"], compact=True)
+            with menu_col:
+                show_menu(selected["id"])
             show_venue_community_photos(user, selected["id"])
             st.subheader("Posts")
             with st.expander("Post about this venue", icon=":material/add_a_photo:"):

@@ -81,23 +81,32 @@ VENUE_WEATHER_CSS = """
 
 THEME_CSS = """
 <style>
-/* Red banner across the top with a thin gold and dark line under it, like bottle neck foil. */
-.stApp {
+/* Red banner at the top of the page with a thin gold and dark line under it (like bottle neck foil),
+   plus our own beer illustration. It sits on stMain, the element that scrolls, with
+   background-attachment: local, so the banner scrolls away with the content instead of staying behind it. */
+.stApp { background: #FBF3E4; }
+[data-testid="stMain"] {
   background:
+    url("app/static/beers.svg") no-repeat right 4% top 46px / 380px 160px local,
     linear-gradient(to bottom,
-      #B80F24 0, #D0142C 210px,
+      #B80F24 0, #B80F24 60px, #D0142C 210px,
       #D4A646 210px, #D4A646 215px,
       #2A1405 215px, #2A1405 218px,
-      #FBF3E4 218px) no-repeat;
+      #FBF3E4 218px) no-repeat local;
 }
-[data-testid="stHeader"] { background: transparent; }
+@media (max-width: 900px) {
+  [data-testid="stMain"] {
+    background:
+      linear-gradient(to bottom,
+        #B80F24 0, #B80F24 60px, #D0142C 210px,
+        #D4A646 210px, #D4A646 215px,
+        #2A1405 215px, #2A1405 218px,
+        #FBF3E4 218px) no-repeat local;
+  }
+}
+/* The top bar (Deploy/menu) stays visible; a solid red strip keeps it readable after scrolling. */
+[data-testid="stHeader"] { background: #B80F24; }
 [data-testid="stHeader"] * { color: #FFF4DC !important; }
-/* Our own beer illustration on the right side of the banner. */
-[data-testid="stMain"]::before {
-  content: ""; position: absolute; top: 46px; right: 4%; width: 380px; height: 160px; z-index: 0;
-  background: url("app/static/beers.svg") no-repeat right top / contain; pointer-events: none;
-}
-@media (max-width: 900px) { [data-testid="stMain"]::before { display: none; } }
 h1, h1 span { color: #FFFFFF !important; text-shadow: 0 2px 0 rgba(90, 10, 20, 0.35); }
 h1 { margin-bottom: 1.6rem !important; }
 h2, h3 { color: #3A1E08 !important; }

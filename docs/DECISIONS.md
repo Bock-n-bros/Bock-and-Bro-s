@@ -463,35 +463,70 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** creating rows inline in the Streamlit screen, where the conversion is harder to test.
 - **Where:** `logic.py`, `app.render_map` and `tests/test_map.py`.
 
-### D-066 · Main sections use Streamlit top navigation — Replaced by D-070
+
+## In-app notifications and tagging (spec 14)
+
+### D-066 · Pop-ups are Streamlit toasts checked every 10 seconds
+*19 Nov 2026 · spec 14*
+
+- **What:** a sidebar fragment (`st.fragment(run_every=10)`) reads new notifications, shows each once with `st.toast`, and shows the unread count.
+- **Why:** Streamlit cannot send real browser/phone push notifications (that needs a service worker); a short check works while the app is open, and email covers the rest.
+- **Instead of:** an external push service.
+- **Where:** `app.show_alert_bell`, `logic.take_new_alerts`, `alerts.toasted`.
+
+### D-067 · One unread message notification per conversation
+*19 Nov 2026 · spec 14*
+
+- **What:** a new message updates the existing unread notification for that chat instead of adding another; likes notify once per person and post.
+- **Why:** an active chat or a like/unlike loop would otherwise flood the list.
+- **Instead of:** one row per message or per like click.
+- **Where:** `logic.notify`, `db.find_alert`, `db.refresh_alert`.
+
+### D-068 · Notification emails: opt-in, throttled, no content
+*19 Nov 2026 · spec 14*
+
+- **What:** emails respect `users.email_notifications`; likes, comments and messages get at most one email per hour per post or conversation; tags and group invites are always emailed; no email quotes any text. Three Notify bro tests now clear the outbox first, and the table-count/RLS tests list the two new tables.
+- **Why:** keeps emails useful and private (same rule as Notify bro, D in spec 10).
+- **Instead of:** an email for every event.
+- **Where:** `logic._email_alert`, `alerts.emailed_at`.
+
+### D-069 · Users choose which notifications they get by email
+*19 Nov 2026 · spec 14*
+
+- **What:** My profile has "Send me emails" plus six choices: likes/comments, tags, group invites, new meetups, messages and Notify bro. Stored as `users.email_categories` (comma list; empty = none; not set = all, so nothing changes for existing users). Creating a meetup now notifies the group (new kind `event`). The fixed list of kinds in the `alerts` table was removed (checked in `logic.py` instead) so new kinds need no migration.
+- **Why:** people want e.g. meetups and messages by email, but not every like.
+- **Instead of:** one on/off switch for all email.
+- **Where:** `logic.EMAIL_CATEGORIES`, `logic.wants_email`, `db._ensure_email_categories_column`, `db._drop_alert_kind_check`, `app.py` profile form.
+
+### D-070 · Main sections use Streamlit top navigation — Replaced by D-074
 
 - **What:** Feed, Venues, People, Messages and Profile are registered as icon pages with `st.navigation(position="top")`; the sidebar holds account details and logout.
 - **Why:** the same five destinations stay visible as a clear app menu while account controls remain easy to find.
 - **Instead of:** switching screens through a sidebar radio control.
 - **Where:** `app.py` `NAV_PAGES` and the navigation shell.
 
-### D-067 · Detail navigation uses URL IDs and a session history stack
+### D-071 · Detail navigation uses URL IDs and a session history stack
 
 - **What:** venue, profile, post and chat detail IDs live in query parameters; a session stack stores the source page and query state for Back.
 - **Why:** shared URLs, refresh and browser history retain the selected detail while Back can restore the original list or previous detail.
 - **Instead of:** session-only selected IDs and a fixed return destination.
 - **Where:** `logic.build_detail_query`, `logic.parse_detail_id`, `app.open_detail`, detail routes and `tests/test_navigation.py`.
 
-### D-068 · Venue and profile links share URL builders
+### D-072 · Venue and profile links share URL builders
 
 - **What:** venue and profile links use shared query helpers with a lowercase source value; post headers render these URLs as inline text links.
 - **Why:** names remain readable links and every route carries the same detail ID and return source.
 - **Instead of:** separate button callbacks and URL formats in feed, reviews, comments and messages.
 - **Where:** `logic.venue_link_params`, `logic.profile_link_params`, `app.detail_text_link` and `app.show_post`.
 
-### D-069 · Map pins open a preview before venue details
+### D-073 · Map pins open a preview before venue details
 
 - **What:** selecting a pin stores its ID for a compact preview; only “View bar” opens the venue URL, and the preview ID stays in session state for Back.
 - **Why:** map exploration does not navigate away and returning restores the selected venue context.
 - **Instead of:** opening a full venue card immediately when a pin is selected.
 - **Where:** `logic.map_preview_selection`, `app.render_map`, `app.render_venue_card` and `tests/test_navigation.py`.
 
-### D-070 · Main sections use Streamlit sidebar navigation
+### D-074 · Main sections use Streamlit sidebar navigation
 
 - **What:** the five icon pages appear in the sidebar after the account identity; the logo comes first and logout stays at the bottom.
 - **Why:** the app keeps its familiar left-side navigation and the account controls remain grouped above the page list.

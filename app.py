@@ -721,7 +721,7 @@ def clear_detail_url():
 
 def go_back_from_detail(default_page):
     """Return to the page stored when a detail was opened."""
-    allowed = set(NAV_PAGES)
+    allowed = set(ALL_NAV_PAGES)
     history = st.session_state.get("detail_history", [])
     previous = history.pop() if history else None
     st.session_state.detail_history = history
@@ -735,14 +735,14 @@ def go_back_from_detail(default_page):
     clear_detail_url()
     if previous:
         st.query_params.update(previous["query"])
-    st.switch_page(NAV_PAGES[destination])
+    st.switch_page(ALL_NAV_PAGES[destination])
 
 
 def show_detail_back(default_page):
     """Render the standard back control for any detail page."""
     if not st.session_state.get("detail_history"):
         st.session_state.came_from_page = logic.parse_return_page(
-            st.query_params, set(NAV_PAGES), default_page
+            st.query_params, set(ALL_NAV_PAGES), default_page
         )
     st.button("← Back", key=f"back-{default_page}",
               on_click=go_back_from_detail, args=(default_page,))
@@ -1019,12 +1019,19 @@ def show_profile(user, profile_id):
                 st.rerun()
             st.error(result.message)
         with st.form("email-notifications-form"):
-            enabled = st.checkbox("Email notifications", value=logic.app_email_notifications_enabled(user))
+            st.markdown("**Email notifications**")
+            enabled = st.checkbox("Send me emails", value=logic.app_email_notifications_enabled(user))
+            st.caption("Choose what you want by email (you always see everything under Notifications):")
+            current = logic.get_app_email_categories(user)
+            chosen = [category for category, label in logic.EMAIL_CATEGORIES.items()
+                      if st.checkbox(label, value=category in current, key=f"email-category-{category}")]
             save_notifications = st.form_submit_button("Save notification settings")
         if save_notifications:
             result = logic.set_app_email_notifications(user, enabled)
             if result.success:
-                st.success(result.message)
+                result = logic.set_app_email_categories(user, chosen)
+            if result.success:
+                st.success("Notification settings saved.")
             else:
                 st.error(result.message)
 
@@ -1129,6 +1136,8 @@ def show_post(user, post, key):
         show_post_photos(post, key)
         if post["text"]:
             st.text(post["text"])
+        if post.get("tags"):
+            st.caption("with " + ", ".join("@" + tag["username"] for tag in post["tags"]))
         like_label = "Unlike" if post["liked_by_me"] else "Like"
         if st.button(f"{like_label} · {post['like_count']}", key=f"{key}-like-{post['id']}"):
             result = logic.toggle_app_like(user, post["id"])
@@ -1216,11 +1225,14 @@ def show_post_form(user, key, venue_id=None):
         photos = st.file_uploader(
             f"Photos (optional, up to {logic.MAX_POST_PHOTOS}: JPG, PNG, iPhone HEIC or WEBP)",
             type=logic.IMAGE_TYPES, accept_multiple_files=True)
+        people = {person["id"]: person["username"] for person in logic.get_app_group_candidates(user)}
+        tagged = st.multiselect("Tag people (optional)", list(people), format_func=people.get,
+                                max_selections=logic.MAX_TAGS, placeholder="Search by username")
         submitted = st.form_submit_button("Post", type="primary")
     if submitted:
         uploads = [(photo.getvalue(), photo.name) for photo in photos or []]
         result = logic.create_app_post(user, chosen_venue, text,
-                                       location_name=other_location, images=uploads)
+                                       location_name=other_location, images=uploads, tagged_user_ids=tagged)
         if result.success:
             st.toast(result.message)
         else:
@@ -1241,6 +1253,13 @@ def show_feed_page(user):
     with st.expander("New post", icon=":material/add_a_photo:"):
         show_post_form(user, "feed")
     feed_posts = logic.get_app_feed(user)
+    selected_post_id = st.session_state.pop("feed_post_id", None)
+    if selected_post_id is not None:
+        selected_post = logic.get_app_post_for_viewer(selected_post_id, user)
+        if selected_post is not None:
+            st.caption("Opened post")
+            show_post(user, selected_post, "feed-selected")
+            feed_posts = [post for post in feed_posts if post["id"] != selected_post_id]
     show_post_list(user, feed_posts,
                    "Your feed is empty. Follow people under People, or follow bars on their page.", "feed")
 
@@ -1385,7 +1404,7 @@ def run_venues_page():
         if venue is None:
             render_not_found("Venues")
             return
-        if logic.parse_return_page(st.query_params, set(NAV_PAGES), "") == "Venues":
+        if logic.parse_return_page(st.query_params, set(ALL_NAV_PAGES), "") == "Venues":
             st.session_state.map_preview_id = venue_id
         show_detail_back("Venues")
         show_venue_details(user, venue)
@@ -1460,15 +1479,88 @@ def logout():
     st.query_params.clear()
     st.logout()
 
+ALERT_ICONS = {"like": ":material/favorite:", "comment": ":material/chat_bubble:", "tag": ":material/sell:",
+               "group_added": ":material/group_add:", "event": ":material/event:", "message": ":material/mail:"}
+
+
+def open_conversation(conversation_id):
+    """Button callback: open a conversation on the Messages page."""
+    open_detail("chat", conversation_id, "Messages")
+
+
+def go_to_notifications():
+    """Button callback: open the Notifications page."""
+    st.switch_page(NOTIFICATIONS_PAGE)
+
+
+@st.fragment(run_every=10)
+def show_alert_bell(user):
+    """Check for new notifications every 10 seconds, pop them up and show the unread count."""
+    conversation_id = logic.parse_detail_id(st.query_params, "chat")
+    reading_chat = (st.session_state.get("active_page") == "Messages"
+                    and conversation_id is not None)
+    for alert in logic.take_app_new_alerts(user)[-3:]:
+        # No pop-up for messages in the chat the user is looking at right now.
+        if reading_chat and alert["kind"] == "message" and alert["conversation_id"] == conversation_id:
+            continue
+        st.toast(alert["text"], icon=ALERT_ICONS.get(alert["kind"]), duration="long")
+    # On the Notifications page everything shown is being read, so no "new" count there.
+    unread = 0 if st.session_state.get("active_page") == "Notifications" else logic.count_app_unread_alerts(user)
+    label = f"Notifications · {unread} new" if unread else "Notifications"
+    st.button(label, icon=":material/notifications:", key="alert-bell",
+              type="primary" if unread else "secondary", on_click=go_to_notifications)
+
+
+def show_notifications_page(user):
+    """List the user's notifications, newest first, and mark them as read."""
+    st.header("Notifications")
+    alerts = logic.get_app_alerts(user)
+    if not alerts:
+        st.caption("No notifications yet. Likes, comments, tags, group invites and messages show up here.")
+    for alert in alerts:
+        text_col, button_col = st.columns([5, 1])
+        marker = "**New** · " if alert["read_at"] is None else ""
+        text_col.markdown(f"{ALERT_ICONS.get(alert['kind'], '')} {marker}{html.escape(alert['text'])}")
+        text_col.caption(logic.format_post_time(alert["created_at"]))
+        if alert["post_id"] is not None:
+            button_col.button("Open", key=f"alert-{alert['id']}", on_click=open_post_in_feed, args=(alert["post_id"],))
+        elif alert["conversation_id"] is not None:
+            button_col.button("Open", key=f"alert-{alert['id']}", on_click=open_conversation,
+                              args=(alert["conversation_id"],))
+    # Seeing the list counts as reading it; "New" disappears the next time the page is opened.
+    logic.mark_app_alerts_read(user)
+
+
+
+
+
+def run_notifications_page():
+    """Show notifications in the hidden route used by the notification bell."""
+    st.session_state.active_page = "Notifications"
+    show_notifications_page(user)
+
+
+NOTIFICATIONS_PAGE = st.Page(
+    run_notifications_page, title="Notifications", icon="🔔",
+    url_path="notifications", visibility="hidden",
+)
+ALL_NAV_PAGES = {**NAV_PAGES, "Notifications": NOTIFICATIONS_PAGE}
+
 
 if logic.can_view_venues(user):
     with st.sidebar:
         show_avatar(user, 48)
         st.write(user["username"])
         st.caption(user["role"].title())
-        navigation = st.navigation(list(NAV_PAGES.values()), position="sidebar")
-        st.markdown("<style>.st-key-sidebar_logout{position:fixed;bottom:1rem;width:14rem}</style>",
-                    unsafe_allow_html=True)
+        navigation = st.navigation(
+            [*NAV_PAGES.values(), NOTIFICATIONS_PAGE], position="sidebar"
+        )
+        st.session_state.active_page = navigation.title
+        show_alert_bell(user)
+        st.markdown(
+            "<style>.st-key-sidebar_logout{position:fixed;bottom:1rem;width:14rem}</style>",
+            unsafe_allow_html=True,
+        )
         st.button("Log out", key="sidebar_logout", on_click=logout, width="stretch")
     if "flash_error" in st.session_state:
         st.error(st.session_state.pop("flash_error"))

@@ -57,8 +57,9 @@ def test_detail_query_builder_rejects_invalid_target():
 
 
 def test_return_page_uses_valid_origin_and_falls_back_for_invalid_origin():
-    allowed = {"Feed", "Venues", "People", "Messages", "Profile"}
+    allowed = {"Feed", "Venues", "People", "Messages", "Profile", "Notifications"}
     assert logic.parse_return_page({"from": "People"}, allowed, "Feed") == "People"
+    assert logic.parse_return_page({"from": "notifications"}, allowed, "Feed") == "Notifications"
     assert logic.parse_return_page({"from": "../../admin"}, allowed, "Feed") == "Feed"
 
 
@@ -78,7 +79,11 @@ def test_app_uses_sidebar_navigation_with_all_five_icon_pages_in_order():
         "People": ("People", "👥"), "Messages": ("Messages", "💬"),
         "Profile": ("Profile", "👤"),
     }
-    assert 'st.navigation(list(NAV_PAGES.values()), position="sidebar")' in source
+    assert '[*NAV_PAGES.values(), NOTIFICATIONS_PAGE], position="sidebar"' in source
+    assert 'url_path="notifications", visibility="hidden"' in source
+    assert "show_alert_bell(user)" in source
+    assert "logic.take_app_new_alerts(user)" in source
+    assert "logic.mark_app_alerts_read(user)" in source
     sidebar_start = source.index("with st.sidebar:", source.index("if logic.can_view_venues(user):"))
     sidebar_end = source.index("navigation.run()", sidebar_start)
     sidebar = source[sidebar_start:sidebar_end]

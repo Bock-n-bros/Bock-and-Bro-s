@@ -158,7 +158,7 @@ def build_map_rows(venues, summaries, minimum_rating="All"):
 DETAIL_QUERY_KEYS = {"venue": "venue", "profile": "user", "post": "post", "chat": "chat"}
 PAGE_SOURCE_VALUES = {
     "Feed": "feed", "Venues": "venues", "People": "people",
-    "Messages": "messages", "Profile": "profile",
+    "Messages": "messages", "Profile": "profile", "Notifications": "notifications",
 }
 
 
@@ -330,6 +330,7 @@ class NotificationResult:
 
 MAX_POST_LENGTH = 500
 MAX_LOCATION_LENGTH = 60
+MAX_TAGS = 10
 IMAGE_TYPES = ["jpg", "jpeg", "png", "heic", "heif", "webp"]
 MAX_POST_PHOTOS = 4
 MAX_MENU_ITEMS = 60
@@ -711,6 +712,8 @@ def create_group_conversation(database, user, name, member_ids, now=None):
     conversation_id = database.create_conversation(
         user["id"], [user["id"], *member_ids], name=name, is_group=True, now=now
     )
+    for member_id in member_ids:
+        notify(database, member_id, user, "group_added", conversation_id=conversation_id, now=now)
     return MessageResult(True, "Group created.", conversation_id)
 
 
@@ -736,6 +739,7 @@ def add_group_member(database, user, conversation_id, member_id, now=None):
     if len(database.get_conversation_members(conversation_id)) >= MAX_GROUP_MEMBERS:
         return MessageResult(False, "Groups can have at most 20 members.")
     database.add_conversation_member(conversation_id, member_id, now=now)
+    notify(database, member_id, user, "group_added", conversation_id=conversation_id, now=now)
     return MessageResult(True, "Member added.", conversation_id)
 
 
@@ -796,6 +800,8 @@ def send_message(database, user, conversation_id, text, now=None):
     if len(text) > MAX_MESSAGE_LENGTH:
         return MessageResult(False, f"Messages can be at most {MAX_MESSAGE_LENGTH} characters.")
     database.add_message(conversation_id, user["id"], text, now=now)
+    for member in database.get_conversation_members(conversation_id):
+        notify(database, member["id"], user, "message", conversation_id=conversation_id, now=now)
     return MessageResult(True, "Message sent.", conversation_id)
 
 
@@ -882,6 +888,8 @@ def create_event(database, user, conversation_id, venue_id, title, starts_at,
         return EventResult(False, "Choose a valid date and time.")
     event_id = database.add_event(conversation_id, venue_id, title.strip(), start,
                                   max_attendees, user["id"], now=now)
+    for member in database.get_conversation_members(conversation_id):
+        notify(database, member["id"], user, "event", conversation_id=conversation_id, now=now)
     return EventResult(True, "Meetup created.", event_id)
 
 
@@ -967,7 +975,7 @@ def _send_notification(database, sender, conversation, recipient_id, subject, de
     recipient = database.get_email_notification_settings(recipient_id)
     if recipient is None:
         return "missing"
-    if not recipient["email_notifications"]:
+    if not wants_email(recipient, "notify_bro"):
         return "disabled"
     remaining = _notification_cooldown(database, conversation["id"], recipient_id, now)
     if remaining is not None:
@@ -1343,11 +1351,12 @@ def get_app_venue_follow_status(user, venue_id):
 
 
 def create_post(database, user, venue_id, text, image_bytes=None, image_name=None, now=None,
-                location_name=None, images=None):
+                location_name=None, images=None, tagged_user_ids=None):
     """Check permission and input, then save a post tied to a venue or a typed-in location.
 
     `images` is a list of (bytes, filename) pairs for a post with several photos.
     `image_bytes` and `image_name` are the single-photo form used by earlier callers.
+    `tagged_user_ids` are the users tagged in the post; each gets a notification.
     """
     if not _is_logged_in(user):
         return PostResult(False, "Log in to post.")
@@ -1374,11 +1383,22 @@ def create_post(database, user, venue_id, text, image_bytes=None, image_name=Non
         return PostResult(False, f"A post can have at most {MAX_POST_PHOTOS} photos.")
     if not text and not photos:
         return PostResult(False, "Add some text or a photo.")
+    tagged_user_ids = list(dict.fromkeys(tagged_user_ids or []))
+    if len(tagged_user_ids) > MAX_TAGS:
+        return PostResult(False, f"You can tag at most {MAX_TAGS} people.")
+    if user["id"] in tagged_user_ids:
+        return PostResult(False, "You cannot tag yourself.")
+    if any(database.get_user_by_id(tagged_id) is None for tagged_id in tagged_user_ids):
+        return PostResult(False, "A tagged user could not be found.")
     try:
         post_id = database.create_post(user["id"], venue_id, text or None, now=now,
                                        location_name=location_name, images=photos)
     except ValueError as error:
         return PostResult(False, str(error))
+    if tagged_user_ids:
+        database.add_post_tags(post_id, tagged_user_ids)
+        for tagged_id in tagged_user_ids:
+            notify(database, tagged_id, user, "tag", post_id=post_id, now=now)
     return PostResult(True, "Posted!", post_id)
 
 
@@ -1406,9 +1426,13 @@ def _add_like_details(database, posts, user):
         counts[like["post_id"]] = counts.get(like["post_id"], 0) + 1
         if like["user_id"] == user["id"]:
             liked_ids.add(like["post_id"])
+    tags = {}
+    for tag in database.get_tags_for_posts(post["id"] for post in posts):
+        tags.setdefault(tag["post_id"], []).append({"id": tag["id"], "username": tag["username"], "role": tag["role"]})
     for post in posts:
         post["like_count"] = counts.get(post["id"], 0)
         post["liked_by_me"] = post["id"] in liked_ids
+        post["tags"] = tags.get(post["id"], [])
     return posts
 
 
@@ -1647,6 +1671,7 @@ def add_comment(database, user, post_id, text, now=None):
     if len(text) > 500:
         return CommentResult(False, "Comments can be at most 500 characters.")
     comment_id = database.add_comment(post_id, user["id"], text, now=now)
+    notify(database, _post_owner(database, post_id), user, "comment", post_id=post_id, now=now)
     return CommentResult(True, "Comment added.", comment_id)
 
 
@@ -1678,6 +1703,7 @@ def toggle_like(database, user, post_id, now=None):
         database.remove_like(post_id, user["id"])
         return LikeResult(True, "Like removed.", False)
     database.add_like(post_id, user["id"], now=now)
+    notify(database, _post_owner(database, post_id), user, "like", post_id=post_id, now=now)
     return LikeResult(True, "Post liked.", True)
 
 
@@ -1690,10 +1716,10 @@ def format_post_time(timestamp):
 
 
 def create_app_post(user, venue_id, text, image_bytes=None, image_name=None,
-                    location_name=None, images=None):
+                    location_name=None, images=None, tagged_user_ids=None):
     """Create a post through the configured database."""
     return create_post(db, user, venue_id, text, image_bytes, image_name,
-                       location_name=location_name, images=images)
+                       location_name=location_name, images=images, tagged_user_ids=tagged_user_ids)
 
 
 def get_app_feed(user):
@@ -1833,3 +1859,204 @@ def delete_app_comment(user, comment_id):
 def toggle_app_like(user, post_id):
     """Toggle a post like through the configured database."""
     return toggle_like(db, user, post_id)
+
+
+# ---------------------------------------------------------------------------
+# In-app notifications ("alerts") with optional email (spec 14)
+# ---------------------------------------------------------------------------
+
+ALERT_KINDS = ("like", "comment", "tag", "group_added", "event", "message")
+# What users can choose to get by email (My profile). Stored as a comma list; NULL = all.
+EMAIL_CATEGORIES = {
+    "posts": "Likes and comments on my posts",
+    "tags": "When someone tags me in a post",
+    "groups": "When someone adds me to a group",
+    "meetups": "New meetups in my groups",
+    "messages": "New messages",
+    "notify_bro": "Notify bro reminders",
+}
+ALERT_EMAIL_CATEGORY = {"like": "posts", "comment": "posts", "tag": "tags", "group_added": "groups",
+                        "event": "meetups", "message": "messages"}
+# Kinds that get at most one email per hour for the same post or conversation, so a busy
+# post or chat does not flood the inbox. Tags and group invites are emailed every time.
+_THROTTLED_EMAIL_KINDS = {"like", "comment", "message"}
+EMAIL_COOLDOWN = timedelta(hours=1)
+
+
+def _post_owner(database, post_id):
+    """Return the id of the user who wrote a post, or None."""
+    posts = database.get_post_details(post_id)
+    return posts[0]["user_id"] if posts else None
+
+
+def _utc(now):
+    """Return a timezone-aware UTC time (the current time when none is given)."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(timezone.utc)
+
+
+def alert_text(alert):
+    """Describe a notification in one short sentence."""
+    actor = alert["actor_username"]
+    group = alert.get("conversation_name") or "a group"
+    if alert["kind"] == "like":
+        return f"{actor} liked your post"
+    if alert["kind"] == "comment":
+        return f"{actor} commented on your post"
+    if alert["kind"] == "tag":
+        return f"{actor} tagged you in a post"
+    if alert["kind"] == "group_added":
+        return f"{actor} added you to {group}"
+    if alert["kind"] == "event":
+        return f"{actor} planned a meetup in {group}"
+    if alert.get("is_group"):
+        return f"{actor} sent a message in {group}"
+    return f"{actor} sent you a message"
+
+
+def notify(database, recipient_id, actor, kind, post_id=None, conversation_id=None, now=None):
+    """Create an in-app notification (and maybe an email); never fails the action that caused it."""
+    if recipient_id is None or recipient_id == actor["id"] or kind not in ALERT_KINDS:
+        return None
+    try:
+        if kind == "like" and database.find_alert(recipient_id, "like", actor_id=actor["id"], post_id=post_id):
+            return None  # liking, unliking and liking again only notifies once
+        if kind == "message":
+            # One unread notification per conversation: newer messages move it to the top again.
+            existing = database.find_alert(recipient_id, "message", conversation_id=conversation_id, unread_only=True)
+            if existing is not None:
+                database.refresh_alert(existing["id"], actor["id"], now=now)
+                alert_id = existing["id"]
+            else:
+                alert_id = database.add_alert(recipient_id, actor["id"], kind, conversation_id=conversation_id, now=now)
+        else:
+            alert_id = database.add_alert(recipient_id, actor["id"], kind, post_id=post_id,
+                                          conversation_id=conversation_id, now=now)
+        _email_alert(database, alert_id, recipient_id, actor, kind, post_id, conversation_id, now)
+        return alert_id
+    except Exception:
+        logging.exception("Could not create %s notification for user %s", kind, recipient_id)
+        return None
+
+
+def _email_alert(database, alert_id, recipient_id, actor, kind, post_id, conversation_id, now):
+    """Email a notification if the user wants email and it is not too soon after the last one."""
+    if not mail.smtp_configured():
+        return False
+    settings = database.get_email_notification_settings(recipient_id)
+    if not wants_email(settings, ALERT_EMAIL_CATEGORY[kind]):
+        return False
+    current = _utc(now)
+    if kind in _THROTTLED_EMAIL_KINDS:
+        last = database.get_last_alert_email(recipient_id, kind, post_id=post_id, conversation_id=conversation_id)
+        if last is not None and current - _utc(datetime.fromisoformat(last)) < EMAIL_COOLDOWN:
+            return False
+    conversation = database.get_conversation(conversation_id) if conversation_id else None
+    text = alert_text({"kind": kind, "actor_username": actor["username"],
+                       "conversation_name": conversation["name"] if conversation else None,
+                       "is_group": bool(conversation and conversation["is_group"])})
+    # Like the Notify bro emails, never include message, comment or post text.
+    body = f"{text} on Bock'n Bros.\n\nOpen Bock'n Bros: {mail.app_url()}"
+    try:
+        mail.send_notification(settings["email"], f"Bock'n Bros: {text}", body)
+    except Exception:
+        logging.exception("Notification email failed for user %s", recipient_id)
+        return False
+    database.mark_alert_emailed(alert_id, now=now)
+    return True
+
+
+def get_alerts(database, user):
+    """Return the user's notifications, newest first, each with a 'text'."""
+    if not _is_logged_in(user):
+        return []
+    alerts = database.get_alerts(user["id"])
+    for alert in alerts:
+        alert["text"] = alert_text(alert)
+    return alerts
+
+
+def take_new_alerts(database, user):
+    """Return notifications not yet shown as a pop-up and mark them as shown."""
+    if not _is_logged_in(user):
+        return []
+    alerts = database.get_untoasted_alerts(user["id"])
+    for alert in alerts:
+        alert["text"] = alert_text(alert)
+    database.mark_alerts_toasted(alert["id"] for alert in alerts)
+    return alerts
+
+
+def count_unread_alerts(database, user):
+    """Return how many notifications the user has not read."""
+    return database.count_unread_alerts(user["id"]) if _is_logged_in(user) else 0
+
+
+def mark_alerts_read(database, user, now=None):
+    """Mark all of the user's notifications as read."""
+    if _is_logged_in(user):
+        database.mark_alerts_read(user["id"], now=now)
+
+
+def get_app_alerts(user):
+    """Read notifications through the configured database."""
+    return get_alerts(db, user)
+
+
+def take_app_new_alerts(user):
+    """Read and mark pop-up notifications through the configured database."""
+    return take_new_alerts(db, user)
+
+
+def count_app_unread_alerts(user):
+    """Count unread notifications through the configured database."""
+    return count_unread_alerts(db, user)
+
+
+def mark_app_alerts_read(user):
+    """Mark notifications read through the configured database."""
+    mark_alerts_read(db, user)
+
+
+def parse_email_categories(text):
+    """Turn the stored comma list into a set; None (never saved) means every category."""
+    if text is None:
+        return set(EMAIL_CATEGORIES)
+    return {item for item in text.split(",") if item in EMAIL_CATEGORIES}
+
+
+def wants_email(settings, category):
+    """Return whether a user's settings allow an email of this category."""
+    return bool(settings and settings["email_notifications"]
+                and category in parse_email_categories(settings.get("email_categories")))
+
+
+def get_email_categories(database, user):
+    """Return the categories the signed-in user gets by email."""
+    if not _is_logged_in(user):
+        return set()
+    return parse_email_categories(database.get_email_categories(user["id"]))
+
+
+def set_email_categories(database, user, categories):
+    """Save which categories the signed-in user wants by email."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to change notification settings.")
+    categories = list(categories or [])
+    if any(category not in EMAIL_CATEGORIES for category in categories):
+        return NotificationResult(False, "Unknown notification type.")
+    chosen = [category for category in EMAIL_CATEGORIES if category in categories]
+    database.set_email_categories(user["id"], ",".join(chosen))
+    return NotificationResult(True, "Notification settings saved.")
+
+
+def get_app_email_categories(user):
+    """Read email categories through the configured database."""
+    return get_email_categories(db, user)
+
+
+def set_app_email_categories(user, categories):
+    """Save email categories through the configured database."""
+    return set_email_categories(db, user, categories)

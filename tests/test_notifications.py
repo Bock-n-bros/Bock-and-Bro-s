@@ -112,6 +112,7 @@ def test_group_event_notification_targets_only_members_without_response(tmp_path
     venue = make_venue(db)
     event_id = logic.create_event(db, anna, group, venue, "Friday drinks", "2026-11-19T20:00").event_id
     logic.respond_to_event(db, ben, event_id, "not_going")
+    sent.clear()  # ignore the automatic notification emails (spec 11); this test is about Notify bro
 
     result = logic.notify_event(db, anna, event_id)
 
@@ -131,6 +132,7 @@ def test_group_cooldown_is_per_recipient_not_per_sender(tmp_path, monkeypatch):
     group = logic.create_group_conversation(db, anna, "Friday", [ben["id"], cleo["id"], dia["id"]]).conversation_id
     venue = make_venue(db)
     event_id = logic.create_event(db, anna, group, venue, "Drinks", "2026-11-19T20:00").event_id
+    sent.clear()  # ignore the automatic notification emails (spec 11); this test is about Notify bro
 
     first = logic.notify_event(db, anna, event_id)
     second = logic.notify_event(db, ben, event_id)
@@ -148,6 +150,9 @@ def test_message_email_contains_no_message_text(tmp_path, monkeypatch):
     ben = make_user(db, "ben")
     conversation = logic.start_direct_conversation(db, anna, ben["id"]).conversation_id
     logic.send_message(db, anna, conversation, "SECRET_MESSAGE_BODY_4721")
+    assert all("SECRET_MESSAGE_BODY_4721" not in item.get_body(preferencelist=("plain",)).get_content()
+               for item in sent)  # the automatic message email must not quote the message either
+    sent.clear()  # ignore the automatic notification emails (spec 11); this test is about Notify bro
 
     assert logic.notify_conversation(db, anna, conversation).success
     message = sent[0].get_body(preferencelist=("plain",)).get_content()

@@ -234,6 +234,18 @@ def _table_statements(backend):
             name TEXT NOT NULL, price REAL NOT NULL, position INTEGER NOT NULL,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         )""",
+        f"""CREATE TABLE IF NOT EXISTS post_tags (
+            post_id INTEGER NOT NULL REFERENCES posts(id), user_id INTEGER NOT NULL REFERENCES users(id),
+            UNIQUE (post_id, user_id)
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS alerts (
+            id {identity}, recipient_id INTEGER NOT NULL REFERENCES users(id),
+            actor_id INTEGER NOT NULL REFERENCES users(id),
+            kind TEXT NOT NULL,
+            post_id INTEGER REFERENCES posts(id), conversation_id INTEGER REFERENCES conversations(id),
+            created_at TEXT NOT NULL, read_at TEXT, toasted INTEGER NOT NULL DEFAULT 0 CHECK (toasted IN (0, 1)),
+            emailed_at TEXT
+        )""",
     ]
 
 
@@ -241,7 +253,7 @@ def _rls_table_names():
     """Return every application table that needs Postgres row-level security."""
     return ("images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
             "conversations", "conversation_members", "messages", "events", "event_responses", "notifications",
-            "post_images", "venue_owners", "venue_hours", "menu_items")
+            "post_images", "venue_owners", "venue_hours", "menu_items", "post_tags", "alerts")
 
 
 def init_db():
@@ -260,6 +272,8 @@ def init_db():
         _ensure_user_image_column(connection, backend)
         _ensure_email_notifications_column(connection, backend)
         _ensure_post_location_column(connection, backend)
+        _ensure_email_categories_column(connection, backend)
+        _drop_alert_kind_check(connection, backend)
         _ensure_post_images_backfill(connection, backend)
     _initialized_key = (backend, setting)
 
@@ -287,6 +301,33 @@ def _ensure_email_notifications_column(connection, backend):
     if "email_notifications" not in columns:
         _execute(connection, backend,
             "ALTER TABLE users ADD COLUMN email_notifications INTEGER NOT NULL DEFAULT 1 CHECK (email_notifications IN (0, 1))")
+
+
+def _ensure_email_categories_column(connection, backend):
+    """Add the per-category email choice; NULL means every category (the default)."""
+    if backend == "sqlite":
+        columns = {row[1] for row in _execute(connection, backend, "PRAGMA table_info(users)").fetchall()}
+    else:
+        columns = {row[0] for row in _execute(connection, backend,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ?", ("users",)).fetchall()}
+    if "email_categories" not in columns:
+        _execute(connection, backend, "ALTER TABLE users ADD COLUMN email_categories TEXT")
+
+
+def _drop_alert_kind_check(connection, backend):
+    """Remove the first version's fixed list of alert kinds; logic.py now checks the kind."""
+    if backend == "postgres":
+        _execute(connection, backend, "ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_kind_check")
+        return
+    row = _execute(connection, backend, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alerts'").fetchone()
+    if row and "CHECK (kind" in row[0]:
+        # SQLite cannot drop a CHECK in place, so the table is copied into the new shape once.
+        new_sql = [sql for sql in _table_statements(backend) if "CREATE TABLE IF NOT EXISTS alerts" in sql][0]
+        _execute(connection, backend, "ALTER TABLE alerts RENAME TO alerts_old")
+        _execute(connection, backend, new_sql)
+        _execute(connection, backend, "INSERT INTO alerts SELECT * FROM alerts_old")
+        _execute(connection, backend, "DROP TABLE alerts_old")
 
 
 def _ensure_post_location_column(connection, backend):
@@ -526,9 +567,20 @@ def get_user_by_id(user_id):
 
 
 def get_email_notification_settings(user_id):
-    """Return a user's private email address and notification preference."""
-    row = _query("SELECT email, email_notifications FROM users WHERE id = ?", (user_id,)).fetchone()
-    return _row_dict(row, ("email", "email_notifications"))
+    """Return a user's private email address and notification preferences."""
+    row = _query("SELECT email, email_notifications, email_categories FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _row_dict(row, ("email", "email_notifications", "email_categories"))
+
+
+def get_email_categories(user_id):
+    """Return the stored email categories text (None means all categories)."""
+    row = _query("SELECT email_categories FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row[0] if row else None
+
+
+def set_email_categories(user_id, categories_text):
+    """Save which kinds of notifications the user wants by email."""
+    _query("UPDATE users SET email_categories = ? WHERE id = ?", (categories_text, user_id))
 
 
 def get_email_notifications(user_id):
@@ -1226,3 +1278,112 @@ def get_likes_for_posts(post_ids):
 def count_likes(post_id):
     """Count a post's likes in Python using its like rows."""
     return len(get_likes_for_posts([post_id]))
+
+
+def add_post_tags(post_id, user_ids):
+    """Tag users in a post; tagging the same user twice is ignored."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        for user_id in user_ids:
+            exists = _execute(connection, backend, "SELECT 1 FROM post_tags WHERE post_id = ? AND user_id = ?",
+                              (post_id, user_id)).fetchone()
+            if exists is None:
+                _execute(connection, backend, "INSERT INTO post_tags (post_id, user_id) VALUES (?, ?)",
+                         (post_id, user_id))
+
+
+def get_tags_for_posts(post_ids):
+    """Return tagged users (id, username, role) for several posts in one query."""
+    post_ids = list(post_ids)
+    if not post_ids:
+        return []
+    marks = ", ".join("?" for _ in post_ids)
+    cursor = _query("SELECT t.post_id, u.id, u.username, u.role FROM post_tags t JOIN users u ON u.id = t.user_id "
+                    f"WHERE t.post_id IN ({marks}) ORDER BY u.username_key", tuple(post_ids))
+    return _rows(cursor)
+
+
+_ALERT_COLUMNS = ("SELECT a.id, a.recipient_id, a.actor_id, u.username AS actor_username, a.kind, a.post_id, "
+                  "a.conversation_id, c.name AS conversation_name, c.is_group, a.created_at, a.read_at, a.toasted, "
+                  "a.emailed_at FROM alerts a JOIN users u ON u.id = a.actor_id "
+                  "LEFT JOIN conversations c ON c.id = a.conversation_id ")
+
+
+def add_alert(recipient_id, actor_id, kind, post_id=None, conversation_id=None, now=None):
+    """Save an in-app notification and return its id."""
+    backend, _ = _backend()
+    with _connect() as connection:
+        return _insert(connection, backend,
+            "INSERT INTO alerts (recipient_id, actor_id, kind, post_id, conversation_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (recipient_id, actor_id, kind, post_id, conversation_id, _iso_timestamp(now)))
+
+
+def find_alert(recipient_id, kind, actor_id=None, post_id=None, conversation_id=None, unread_only=False):
+    """Return the newest matching alert, used to avoid duplicate notifications."""
+    sql = _ALERT_COLUMNS + "WHERE a.recipient_id = ? AND a.kind = ?"
+    values = [recipient_id, kind]
+    for column, value in (("a.actor_id", actor_id), ("a.post_id", post_id), ("a.conversation_id", conversation_id)):
+        if value is not None:
+            sql += f" AND {column} = ?"
+            values.append(value)
+    if unread_only:
+        sql += " AND a.read_at IS NULL"
+    rows = _rows(_query(sql + " ORDER BY a.created_at DESC, a.id DESC LIMIT 1", tuple(values)))
+    return rows[0] if rows else None
+
+
+def refresh_alert(alert_id, actor_id, now=None):
+    """Bring an unread alert back to the top with a new actor, so it shows as a new toast."""
+    _query("UPDATE alerts SET actor_id = ?, created_at = ?, toasted = 0 WHERE id = ?",
+           (actor_id, _iso_timestamp(now), alert_id))
+
+
+def get_alerts(recipient_id, limit=50):
+    """Return a user's notifications, newest first."""
+    return _rows(_query(_ALERT_COLUMNS + "WHERE a.recipient_id = ? ORDER BY a.created_at DESC, a.id DESC LIMIT ?",
+                        (recipient_id, limit)))
+
+
+def get_untoasted_alerts(recipient_id):
+    """Return notifications that have not been shown as a pop-up yet, oldest first."""
+    return _rows(_query(_ALERT_COLUMNS + "WHERE a.recipient_id = ? AND a.toasted = 0 ORDER BY a.created_at, a.id",
+                        (recipient_id,)))
+
+
+def mark_alerts_toasted(alert_ids):
+    """Remember that these notifications have been shown as a pop-up."""
+    alert_ids = list(alert_ids)
+    if alert_ids:
+        marks = ", ".join("?" for _ in alert_ids)
+        _query(f"UPDATE alerts SET toasted = 1 WHERE id IN ({marks})", tuple(alert_ids))
+
+
+def count_unread_alerts(recipient_id):
+    """Return how many notifications the user has not read."""
+    return _query("SELECT COUNT(*) FROM alerts WHERE recipient_id = ? AND read_at IS NULL",
+                  (recipient_id,)).fetchone()[0]
+
+
+def mark_alerts_read(recipient_id, now=None):
+    """Mark all of a user's notifications as read (and shown)."""
+    _query("UPDATE alerts SET read_at = ?, toasted = 1 WHERE recipient_id = ? AND read_at IS NULL",
+           (_iso_timestamp(now), recipient_id))
+
+
+def mark_alert_emailed(alert_id, now=None):
+    """Record when an email was sent for a notification."""
+    _query("UPDATE alerts SET emailed_at = ? WHERE id = ?", (_iso_timestamp(now), alert_id))
+
+
+def get_last_alert_email(recipient_id, kind, post_id=None, conversation_id=None):
+    """Return when the user was last emailed about this post or conversation, if ever."""
+    sql = "SELECT MAX(emailed_at) FROM alerts WHERE recipient_id = ? AND kind = ? AND emailed_at IS NOT NULL"
+    values = [recipient_id, kind]
+    if post_id is not None:
+        sql += " AND post_id = ?"
+        values.append(post_id)
+    if conversation_id is not None:
+        sql += " AND conversation_id = ?"
+        values.append(conversation_id)
+    return _query(sql, tuple(values)).fetchone()[0]

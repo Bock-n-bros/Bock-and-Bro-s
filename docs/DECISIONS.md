@@ -463,10 +463,10 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** creating rows inline in the Streamlit screen, where the conversion is harder to test.
 - **Where:** `logic.py`, `app.render_map` and `tests/test_map.py`.
 
-## In-app notifications and tagging (spec 11)
+## In-app notifications and tagging (spec 14)
 
 ### D-066 · Pop-ups are Streamlit toasts checked every 10 seconds
-*19 Nov 2026 · spec 11*
+*19 Nov 2026 · spec 14*
 
 - **What:** a sidebar fragment (`st.fragment(run_every=10)`) reads new notifications, shows each once with `st.toast`, and shows the unread count.
 - **Why:** Streamlit cannot send real browser/phone push notifications (that needs a service worker); a short check works while the app is open, and email covers the rest.
@@ -474,7 +474,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Where:** `app.show_alert_bell`, `logic.take_new_alerts`, `alerts.toasted`.
 
 ### D-067 · One unread message notification per conversation
-*19 Nov 2026 · spec 11*
+*19 Nov 2026 · spec 14*
 
 - **What:** a new message updates the existing unread notification for that chat instead of adding another; likes notify once per person and post.
 - **Why:** an active chat or a like/unlike loop would otherwise flood the list.
@@ -482,7 +482,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Where:** `logic.notify`, `db.find_alert`, `db.refresh_alert`.
 
 ### D-068 · Notification emails: opt-in, throttled, no content
-*19 Nov 2026 · spec 11*
+*19 Nov 2026 · spec 14*
 
 - **What:** emails respect `users.email_notifications`; likes, comments and messages get at most one email per hour per post or conversation; tags and group invites are always emailed; no email quotes any text. Three Notify bro tests now clear the outbox first, and the table-count/RLS tests list the two new tables.
 - **Why:** keeps emails useful and private (same rule as Notify bro, D in spec 10).

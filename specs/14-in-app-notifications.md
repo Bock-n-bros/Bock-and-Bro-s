@@ -1,4 +1,4 @@
-# Spec 11 — In-app notifications, tagging and notification emails
+# Spec 14 — In-app notifications, tagging and notification emails
 
 ## Why
 

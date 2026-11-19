@@ -53,17 +53,20 @@ def test_post_insert_uses_portable_helpers_with_simulated_postgres(monkeypatch):
     monkeypatch.setattr(db, "_ensure_connection", lambda *_: FakeConnection())
     post_id = db.create_post(4, 9, "hello", buffer.getvalue(), "photo.png")
     assert post_id == 42
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert all("?" not in sql and "%s" in sql for sql, _ in calls)
     assert "BYTEA" not in calls[0][0]
     assert calls[0][1][0].startswith(b"\x89PNG")
     assert calls[1][1][3] == 41
+    # The photo is also linked through post_images, at position 0.
+    assert "INSERT INTO post_images" in calls[2][0]
+    assert calls[2][1] == (42, 41, 0)
 
 
 def test_postgres_tables_use_identity_ids():
     statements = db._table_statements("postgres")
-    assert len(statements) == 17
-    identity_tables = ("users", "venues", "reviews", "images", "posts", "comments", "conversations", "messages", "events", "notifications")
+    assert len(statements) == 21
+    identity_tables = ("users", "venues", "reviews", "images", "posts", "comments", "conversations", "messages", "events", "notifications", "post_images", "venue_owners", "venue_hours", "menu_items", "alerts")
     for table in identity_tables:
         sql = next(item for item in statements if f"CREATE TABLE IF NOT EXISTS {table} " in item)
         assert "GENERATED ALWAYS AS IDENTITY" in sql
@@ -96,7 +99,10 @@ def test_postgres_initialization_enables_rls_on_every_table(monkeypatch):
     assert enabled == [f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY" for table in (
         "images", "users", "venues", "reviews", "posts", "comments", "likes", "follows", "venue_follows",
         "conversations", "conversation_members", "messages", "events", "event_responses", "notifications",
-        "post_tags", "alerts")]
+        "post_images", "venue_owners", "venue_hours", "menu_items", "post_tags", "alerts")]
+    # Every table the app creates must be in that list, so a new table cannot ship
+    # without row-level security.
+    assert len(enabled) == len(db._rls_table_names())
 
 
 def test_postgres_unique_violation_uses_common_duplicate_error():

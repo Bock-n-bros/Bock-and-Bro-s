@@ -1,4 +1,4 @@
-"""Tests for in-app notifications, post tags and notification emails (spec 11)."""
+"""Tests for in-app notifications, post tags and notification emails (spec 14)."""
 
 from datetime import datetime, timedelta, timezone
 

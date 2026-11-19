@@ -368,84 +368,156 @@ def show_conversation(user, conversation_id):
             st.text(message["text"])
 
 
-def show_messages_page(user):
-    """Show the conversation list, or one open conversation."""
-    conversation_id = st.session_state.get("conversation_id")
-    if conversation_id is not None:
-        conversation = logic.get_app_conversation_details(user, conversation_id)
-        if conversation is None:
-            st.session_state.pop("conversation_id", None)
-            st.rerun()
-        title = conversation["title"]
-        if st.button("← All conversations"):
-            st.session_state.pop("conversation_id", None)
-            st.rerun()
-        st.subheader(title)
-        if conversation["is_group"]:
-            show_group_controls(user, conversation)
-            show_group_events(user, conversation_id)
-        else:
-            show_notify_button(f"conversation-notify-{conversation_id}",
-                               logic.notify_app_conversation, (user, conversation_id))
-        show_conversation(user, conversation_id)
-        text = st.chat_input("Write a message", max_chars=logic.MAX_MESSAGE_LENGTH)
-        if text:
-            result = logic.send_app_message(user, conversation_id, text)
-            if result.success:
-                st.rerun()
-            st.error(result.message)
+def plain_text_title(title, size="1.02rem"):
+    """Return a bold title as escaped HTML so names are shown exactly as written."""
+    return (f'<div style="font-weight:600;font-size:{size};line-height:1.3">'
+            f'{html.escape(title)}</div>')
+
+
+def conversation_subtitle(conversation):
+    """Describe a conversation in one line: members, or who it is with."""
+    if conversation["is_group"]:
+        names = ", ".join(member["username"] for member in conversation["members"])
+        return f"Group · {len(conversation['members'])} members · {names}"
+    if conversation["other_role"] == "business":
+        return "Direct message · Bar owner"
+    return "Direct message"
+
+
+def show_conversation_avatar(conversation, size, target):
+    """Show the other person's picture, or a shared badge for a group."""
+    if conversation["is_group"]:
+        show_initial_circle("Group", size, target,
+                            background="#C8102E", colour="#FFF4DC")
         return
+    show_avatar({"username": conversation["title"],
+                 "image_id": conversation.get("other_image_id")}, size, target)
 
-    st.header("Messages")
-    with st.expander("New message"):
-        query = st.text_input("Search by username", key="message_search")
-        people = logic.search_app_people(user, query)
-        if query.strip() and not people:
-            st.write("No users found.")
-        for person in people:
-            avatar_col, name_col, button_col = st.columns([1, 3, 1])
-            show_avatar(person, 40, avatar_col)
-            name_col.write(person["username"])
-            if person["role"] == "business":
-                name_col.caption("Bar")
-            if button_col.button("Message", key=f"message-{person['id']}"):
-                result = logic.start_app_direct_conversation(user, person["id"])
-                if result.success:
-                    st.session_state.conversation_id = result.conversation_id
-                    st.rerun()
-                st.error(result.message)
 
-    with st.expander("New group"):
-        group_name = st.text_input("Group name (optional)", max_chars=logic.MAX_GROUP_NAME_LENGTH)
-        candidates = logic.get_app_group_candidates(user)
-        names_by_id = {person["id"]: person["username"] for person in candidates}
-        member_ids = st.multiselect("Members", list(names_by_id), format_func=names_by_id.get)
-        if st.button("Create group", key="create-group"):
-            result = logic.create_app_group(user, group_name, member_ids)
+def show_conversation_card(user, conversation, key):
+    """Show one conversation as a card: who it is with, the last message and a way in."""
+    with st.container(border=True):
+        avatar_col, text_col, open_col = st.columns([1, 5, 1.4],
+                                                    vertical_alignment="center")
+        show_conversation_avatar(conversation, 40, avatar_col)
+        text_col.markdown(plain_text_title(conversation["title"]),
+                          unsafe_allow_html=True)
+        text_col.caption(conversation_subtitle(conversation))
+        if conversation["last_message"]:
+            preview = conversation["last_message"]
+            if conversation["last_sender_id"] == user["id"]:
+                preview = "You: " + preview
+            text_col.text(preview if len(preview) <= 70 else preview[:67] + "...")
+            text_col.caption(logic.format_message_time(conversation["last_message_at"]))
+        else:
+            text_col.caption("No messages yet")
+        if open_col.button("Open", key=f"{key}-{conversation['id']}",
+                           type="primary", width="stretch"):
+            st.session_state.conversation_id = conversation["id"]
+            st.rerun()
+
+
+def show_new_message_picker(user):
+    """Search for a person and start or reopen a direct conversation."""
+    query = st.text_input("Search by username", key="message_search")
+    people = logic.search_app_people(user, query)
+    if not query.strip():
+        st.caption("Type a username to find someone to write to.")
+    elif not people:
+        st.caption("No users found.")
+    for person in people:
+        avatar_col, name_col, button_col = st.columns([1, 3, 1],
+                                                      vertical_alignment="center")
+        show_avatar(person, 40, avatar_col)
+        name_col.write(person["username"])
+        if person["role"] == "business":
+            name_col.caption("Bar")
+        if button_col.button("Message", key=f"message-{person['id']}"):
+            result = logic.start_app_direct_conversation(user, person["id"])
             if result.success:
                 st.session_state.conversation_id = result.conversation_id
                 st.rerun()
             st.error(result.message)
 
-    conversations = logic.list_app_conversations(user)
-    if not conversations:
-        st.write("No conversations yet. Use New message to find someone.")
-    for conversation in conversations:
-        avatar_col, text_col, button_col = st.columns([1, 4, 1])
-        show_avatar({"username": conversation["title"],
-                     "image_id": conversation.get("other_image_id")}, 40, avatar_col)
-        text_col.write(conversation["title"] + (" · Bar owner" if conversation["other_role"] == "business" else ""))
-        if conversation["last_message"]:
-            preview = conversation["last_message"]
-            if conversation["last_sender_id"] == user["id"]:
-                preview = "You: " + preview
-            text_col.text(preview if len(preview) <= 80 else preview[:77] + "...")
-            text_col.caption(logic.format_message_time(conversation["last_message_at"]))
-        else:
-            text_col.caption("No messages yet")
-        if button_col.button("Open", key=f"conversation-{conversation['id']}"):
-            st.session_state.conversation_id = conversation["id"]
+
+def show_new_group_form(user):
+    """Pick members and a name, then create a group conversation."""
+    group_name = st.text_input("Group name (optional)",
+                               max_chars=logic.MAX_GROUP_NAME_LENGTH)
+    candidates = logic.get_app_group_candidates(user)
+    names_by_id = {person["id"]: person["username"] for person in candidates}
+    member_ids = st.multiselect("Members", list(names_by_id),
+                                format_func=names_by_id.get)
+    st.caption("Choose at least 2 people. Without a name, the group is shown by its "
+               "first members.")
+    if st.button("Create group", key="create-group"):
+        result = logic.create_app_group(user, group_name, member_ids)
+        if result.success:
+            st.session_state.conversation_id = result.conversation_id
             st.rerun()
+        st.error(result.message)
+
+
+def show_open_conversation(user, conversation_id):
+    """Show one conversation: who it is with, its meetups and the messages."""
+    conversation = logic.get_app_conversation_details(user, conversation_id)
+    if conversation is None:
+        st.session_state.pop("conversation_id", None)
+        st.rerun()
+    if st.button("← All conversations", key="back-to-conversations"):
+        st.session_state.pop("conversation_id", None)
+        st.rerun()
+    avatar_col, title_col = st.columns([1, 7], vertical_alignment="center")
+    show_conversation_avatar(conversation, 56, avatar_col)
+    title_col.markdown(plain_text_title(conversation["title"], size="1.5rem"),
+                       unsafe_allow_html=True)
+    title_col.caption(conversation_subtitle(conversation))
+    if conversation["is_group"]:
+        show_group_controls(user, conversation)
+        show_group_events(user, conversation_id)
+    else:
+        show_notify_button(f"conversation-notify-{conversation_id}",
+                           logic.notify_app_conversation, (user, conversation_id))
+    st.divider()
+    show_conversation(user, conversation_id)
+    text = st.chat_input("Write a message", max_chars=logic.MAX_MESSAGE_LENGTH)
+    if text:
+        result = logic.send_app_message(user, conversation_id, text)
+        if result.success:
+            st.rerun()
+        st.error(result.message)
+
+
+def show_messages_page(user):
+    """Show my conversations, split into direct chats and groups, or one open chat."""
+    if st.session_state.get("conversation_id") is not None:
+        show_open_conversation(user, st.session_state.conversation_id)
+        return
+
+    st.header("My messages")
+    conversations = logic.list_app_conversations(user)
+    direct = [item for item in conversations if not item["is_group"]]
+    groups = [item for item in conversations if item["is_group"]]
+    st.caption("Everything here is yours: the people you write to and the groups "
+               "you are a member of. Newest activity first.")
+
+    direct_tab, group_tab = st.tabs([f"Direct messages ({len(direct)})",
+                                     f"My groups ({len(groups)})"])
+    with direct_tab:
+        with st.expander("New message", icon=":material/person_add:"):
+            show_new_message_picker(user)
+        if not direct:
+            st.caption("No direct messages yet. Use New message to find someone.")
+        for conversation in direct:
+            show_conversation_card(user, conversation, "direct")
+    with group_tab:
+        with st.expander("New group", icon=":material/group_add:"):
+            show_new_group_form(user)
+        if not groups:
+            st.caption("You are not in any groups yet. Use New group to plan a "
+                       "Bock a Bro with friends.")
+        for conversation in groups:
+            show_conversation_card(user, conversation, "group")
 
 
 def show_group_controls(user, conversation):
@@ -520,7 +592,7 @@ def show_group_events(user, conversation_id):
         for event in event_lists["upcoming"]:
             show_group_event(user, event)
     if event_lists["past"]:
-        st.subheader("Tidligere")
+        st.subheader("Earlier")
         for event in event_lists["past"]:
             show_group_event(user, event)
 
@@ -620,6 +692,20 @@ def show_person_list(user, people, empty_text, key):
                           on_click=open_profile, args=(person["id"], user["id"]))
 
 
+def show_initial_circle(text, size=48, target=None, background="#F3E7D0",
+                        colour="#2B1D14"):
+    """Show one letter in a coloured circle, used when there is no picture."""
+    if target is None:
+        target = st
+    initial = html.escape(text[:1].upper())
+    target.markdown(
+        f'<div style="width:{size}px;height:{size}px;border-radius:50%;'
+        f'display:flex;align-items:center;justify-content:center;'
+        f'background:{background};color:{colour};font-weight:700">{initial}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def show_avatar(person, size=48, target=None):
     """Show a stored profile picture or a circular username initial."""
     if target is None:
@@ -628,13 +714,161 @@ def show_avatar(person, size=48, target=None):
     if avatar["bytes"]:
         target.image(avatar["bytes"], width=size)
         return
-    initial = html.escape(avatar["initial"])
-    target.markdown(
-        f'<div style="width:{size}px;height:{size}px;border-radius:50%;'
-        f'display:flex;align-items:center;justify-content:center;'
-        f'background:#e7edf2;color:#263746;font-weight:700">{initial}</div>',
-        unsafe_allow_html=True,
-    )
+    show_initial_circle(avatar["initial"], size, target)
+
+
+def show_opening_hours(venue_id, compact=False):
+    """Show a venue's week. Today's row is marked, so it reads at a glance."""
+    if not logic.app_has_opening_hours(venue_id):
+        return False
+    today = logic.app_current_weekday()
+    st.markdown("**Opening hours**")
+    for day in logic.get_app_opening_hours(venue_id):
+        day_col, time_col = st.columns([1, 1])
+        label = day["name"]
+        value = day["text"]
+        if day["weekday"] == today:
+            day_col.markdown(f"**{label}** · today")
+            time_col.markdown(f"**{value}**")
+        elif compact:
+            day_col.caption(label)
+            time_col.caption(value)
+        else:
+            day_col.write(label)
+            time_col.write(value)
+    return True
+
+
+def show_menu(venue_id):
+    """Show a venue's menu with prices."""
+    items = logic.get_app_menu(venue_id)
+    if not items:
+        return False
+    st.markdown("**Menu**")
+    for item in items:
+        name_col, price_col = st.columns([3, 1])
+        name_col.text(item["name"])
+        price_col.write(f"{item['price']:.2f} €")
+    return True
+
+
+def show_menu_editor(user, venue_id):
+    """Let the bar that manages a venue change its menu, line by line."""
+    st.caption("Add, change or remove items. Customers see this on your bar's page.")
+    for item in logic.get_app_menu(venue_id):
+        name_col, price_col, save_col, remove_col = st.columns([4, 2, 1, 1],
+                                                               vertical_alignment="bottom")
+        name = name_col.text_input("Item", value=item["name"],
+                                   max_chars=logic.MAX_MENU_NAME_LENGTH,
+                                   key=f"menu-name-{item['id']}")
+        price = price_col.number_input("Price (€)", value=float(item["price"]),
+                                       min_value=logic.MIN_MENU_PRICE,
+                                       max_value=logic.MAX_MENU_PRICE, step=0.10,
+                                       format="%.2f", key=f"menu-price-{item['id']}")
+        if save_col.button("Save", key=f"menu-save-{item['id']}"):
+            result = logic.update_app_menu_item(user, item["id"], name, price)
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+        if remove_col.button("Remove", key=f"menu-remove-{item['id']}"):
+            result = logic.delete_app_menu_item(user, item["id"])
+            if result.success:
+                st.rerun()
+            st.error(result.message)
+    with st.form(f"add-menu-item-{venue_id}", clear_on_submit=True):
+        new_col, price_col = st.columns([4, 2])
+        new_name = new_col.text_input("New item", max_chars=logic.MAX_MENU_NAME_LENGTH)
+        new_price = price_col.number_input("Price (€)", min_value=logic.MIN_MENU_PRICE,
+                                           max_value=logic.MAX_MENU_PRICE, value=2.50,
+                                           step=0.10, format="%.2f")
+        added = st.form_submit_button("Add to menu", type="primary")
+    if added:
+        result = logic.add_app_menu_item(user, venue_id, new_name, new_price)
+        if result.success:
+            st.rerun()
+        st.error(result.message)
+
+
+def show_hours_editor(user, venue_id):
+    """Let the bar that manages a venue set its opening hours, one day at a time."""
+    st.caption("A closing time before the opening time means you stay open past "
+               "midnight, which is fine.")
+    saved = {day["weekday"]: day for day in logic.get_app_opening_hours(venue_id)}
+    for weekday, name in enumerate(logic.WEEKDAY_NAMES):
+        day = saved[weekday]
+        with st.form(f"hours-{venue_id}-{weekday}"):
+            name_col, open_col, close_col, closed_col, save_col = st.columns(
+                [2, 2, 2, 2, 1], vertical_alignment="bottom")
+            name_col.write(name)
+            opens = open_col.time_input("Opens", value=_clock_value(day["opens_at"], time(16, 0)),
+                                        key=f"opens-{venue_id}-{weekday}", step=900)
+            closes = close_col.time_input("Closes", value=_clock_value(day["closes_at"], time(2, 0)),
+                                          key=f"closes-{venue_id}-{weekday}", step=900)
+            is_closed = closed_col.checkbox("Closed", value=day["closed"],
+                                            key=f"closed-{venue_id}-{weekday}")
+            submitted = save_col.form_submit_button("Save")
+        if submitted:
+            result = logic.set_app_venue_hours(user, venue_id, weekday, opens, closes, is_closed)
+            if result.success:
+                st.toast(result.message)
+                st.rerun()
+            st.error(result.message)
+
+
+def _clock_value(stored, fallback):
+    """Turn a stored 'HH:MM' string into a time for the picker."""
+    if not stored:
+        return fallback
+    hour, _, minute = stored.partition(":")
+    return time(int(hour), int(minute))
+
+
+def show_bar_profile_details(user, profile):
+    """Show the bar an account manages: its name, opening hours and menu."""
+    if profile["role"] != "business":
+        return
+    venue = logic.get_app_owned_venue(profile)
+    if venue is None:
+        if profile["is_me"]:
+            st.info("You have not chosen which bar you manage yet.")
+        return
+    with st.container(border=True):
+        st.button(venue["name"], key=f"profile-venue-{venue['id']}", type="tertiary",
+                  icon=":material/sports_bar:", on_click=open_venue, args=(venue["id"],))
+        st.caption(f"{venue['neighbourhood']} · {venue['address']}")
+        if not show_opening_hours(venue["id"], compact=True):
+            st.caption("Opening hours not added yet.")
+        show_menu(venue["id"])
+
+
+def show_bar_management(user, profile):
+    """Show the owner's own tools: choosing a bar, its menu and its hours."""
+    if not profile["is_me"] or profile["role"] != "business":
+        return
+    venue = logic.get_app_owned_venue(user)
+    if venue is None:
+        with st.expander("Choose the bar you manage", icon=":material/storefront:"):
+            venues = {item["id"]: item["name"] for item in logic.get_venues()}
+            chosen = st.selectbox("Your bar", list(venues), index=None,
+                                  format_func=venues.get, placeholder="Choose your bar")
+            st.caption("Pick the bar you run. You can change this later.")
+            if st.button("This is my bar", key="claim-venue", type="primary"):
+                result = logic.claim_app_venue(user, chosen)
+                if result.success:
+                    st.rerun()
+                st.error(result.message)
+        return
+    with st.expander("Menu", icon=":material/restaurant_menu:"):
+        show_menu_editor(user, venue["id"])
+    with st.expander("Opening hours", icon=":material/schedule:"):
+        show_hours_editor(user, venue["id"])
+    with st.expander("Bar settings", icon=":material/settings:"):
+        st.caption(f"You manage {venue['name']}.")
+        if st.button("I no longer manage this bar", key="release-venue"):
+            result = logic.release_app_venue(user)
+            if result.success:
+                st.rerun()
+            st.error(result.message)
 
 
 def show_profile(user, profile_id):
@@ -653,6 +887,8 @@ def show_profile(user, profile_id):
         notes.append("Follows you")
     if notes:
         st.caption(" · ".join(notes))
+    show_bar_profile_details(user, profile)
+    show_bar_management(user, profile)
 
     if profile["is_me"]:
         with st.form("profile-picture-form", clear_on_submit=True):
@@ -736,6 +972,29 @@ def show_people_page(user):
     show_person_list(user, people, "", "search")
 
 
+def show_post_photos(post, key):
+    """Show a post's photos: one full width, several side by side in a grid."""
+    photo_ids = logic.get_app_post_photos(post)
+    if not photo_ids:
+        return
+    images = [(photo_id, logic.get_app_image_bytes(photo_id)) for photo_id in photo_ids]
+    found = [(photo_id, data) for photo_id, data in images if data is not None]
+    if not found:
+        st.caption("Photo unavailable")
+        return
+    if len(found) == 1:
+        st.image(found[0][1], width="stretch")
+    else:
+        for row_start in range(0, len(found), 2):
+            row = found[row_start:row_start + 2]
+            columns = st.columns(2)
+            for column, (photo_id, data) in zip(columns, row):
+                column.image(data, width="stretch")
+        st.caption(f"{len(found)} photos")
+    if len(found) < len(images):
+        st.caption("Some photos are unavailable")
+
+
 def show_post(user, post, key):
     """Show one post: author, bar, photo, text and time."""
     with st.container(border=True):
@@ -750,12 +1009,7 @@ def show_post(user, post, key):
         else:
             # A typed-in "Other" location is shown as plain text: there is no venue page to open.
             venue_col.markdown(f":material/location_on: {html.escape(post['location_name'] or '')}")
-        if post["image_id"]:
-            image_bytes = logic.get_app_post_image(post)
-            if image_bytes is not None:
-                st.image(image_bytes, width="stretch")
-            else:
-                st.caption("Photo unavailable")
+        show_post_photos(post, key)
         if post["text"]:
             st.text(post["text"])
         if post.get("tags"):
@@ -788,6 +1042,33 @@ def show_post(user, post, key):
                 if result.success:
                     st.rerun()
                 st.error(result.message)
+        if post["user_id"] == user["id"]:
+            show_delete_post_controls(user, post, key)
+
+
+def show_delete_post_controls(user, post, key):
+    """Let the author delete their own post, after confirming once."""
+    confirming = f"{key}-confirm-delete-{post['id']}"
+    if not st.session_state.get(confirming):
+        if st.button("Delete post", key=f"{key}-delete-{post['id']}",
+                     icon=":material/delete:"):
+            st.session_state[confirming] = True
+            st.rerun()
+        return
+    st.warning("Delete this post? Its photo, comments and likes go with it. "
+               "This cannot be undone.")
+    delete_col, cancel_col = st.columns(2)
+    if delete_col.button("Yes, delete", key=f"{key}-delete-yes-{post['id']}",
+                         type="primary", width="stretch"):
+        result = logic.delete_app_post(user, post["id"])
+        st.session_state.pop(confirming, None)
+        if result.success:
+            st.rerun()
+        st.error(result.message)
+    if cancel_col.button("Keep it", key=f"{key}-delete-no-{post['id']}",
+                         width="stretch"):
+        st.session_state.pop(confirming, None)
+        st.rerun()
 
 
 OTHER_LOCATION = "other"
@@ -810,16 +1091,17 @@ def show_post_form(user, key, venue_id=None):
         chosen_venue = venue_id
     with st.form(f"{key}-post-form", clear_on_submit=True):
         text = st.text_area("What's happening?", max_chars=logic.MAX_POST_LENGTH)
-        photo = st.file_uploader("Photo (optional, JPG, PNG, iPhone HEIC or WEBP)", type=logic.IMAGE_TYPES)
+        photos = st.file_uploader(
+            f"Photos (optional, up to {logic.MAX_POST_PHOTOS}: JPG, PNG, iPhone HEIC or WEBP)",
+            type=logic.IMAGE_TYPES, accept_multiple_files=True)
         people = {person["id"]: person["username"] for person in logic.get_app_group_candidates(user)}
         tagged = st.multiselect("Tag people (optional)", list(people), format_func=people.get,
                                 max_selections=logic.MAX_TAGS, placeholder="Search by username")
         submitted = st.form_submit_button("Post", type="primary")
     if submitted:
+        uploads = [(photo.getvalue(), photo.name) for photo in photos or []]
         result = logic.create_app_post(user, chosen_venue, text,
-                                       photo.getvalue() if photo else None,
-                                       photo.name if photo else None,
-                                       location_name=other_location, tagged_user_ids=tagged)
+                                       location_name=other_location, images=uploads, tagged_user_ids=tagged)
         if result.success:
             st.toast(result.message)
         else:
@@ -955,6 +1237,11 @@ if logic.can_view_venues(user):
         selected = logic.get_venue(st.session_state.venue_id)
         if selected is not None:
             render_venue_card(selected, user, compact=False)
+            hours_col, menu_col = st.columns(2)
+            with hours_col:
+                show_opening_hours(selected["id"], compact=True)
+            with menu_col:
+                show_menu(selected["id"])
             show_venue_community_photos(user, selected["id"])
             st.subheader("Posts")
             with st.expander("Post about this venue", icon=":material/add_a_photo:"):

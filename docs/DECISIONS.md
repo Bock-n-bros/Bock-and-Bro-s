@@ -612,3 +612,17 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** same principle as D-011 — unknown is not the same as negative, and telling a customer a bar is closed when nobody said so would send them somewhere else.
 - **Instead of:** treating missing hours as closed, or as open.
 - **Where:** `logic.get_opening_hours`, the hours card in `app.py`.
+
+### D-085 · Profile venue history has its own tab
+
+- **What:** the **Been to** tab combines reviewed venues and venue-tagged posts, while **Bars** continues to list followed venues.
+- **Why:** check-in history should include either kind of visit without changing the existing follow list.
+- **Instead of:** replacing the followed-bars tab or mixing followed venues into visit history.
+- **Where:** `db.get_visited_venues`, `logic.get_profile`, `app.show_profile` and `specs/17-check-in.md`.
+
+### D-086 · Post ratings use the full review flow
+
+- **What:** customers may attach a complete optional review to a venue post; the fields are validated before the post is saved and persisted through `logic.submit_review`.
+- **Why:** ratings from posts must obey the same permissions, ranges and one-review-per-venue rule as venue reviews.
+- **Instead of:** storing a separate vibe score on each post or keeping partial rating rules.
+- **Where:** `logic.validate_review_input`, `logic.create_post`, `app.show_post_form` and `specs/17-check-in.md`.

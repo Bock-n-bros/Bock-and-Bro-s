@@ -34,10 +34,10 @@ def make_user(database, username, role="customer"):
     return logic.find_google_user(database, f"sub-{username}")
 
 
-def make_venue(database):
+def make_venue(database, name="Park Bar"):
     """Create a small venue for the post metadata query."""
     return database.insert_venue({
-        "name": "Park Bar", "neighbourhood": "Bairro Alto", "address": "1 Test Street",
+        "name": name, "neighbourhood": "Bairro Alto", "address": "1 Test Street",
         "venue_type": "bar", "shows_football": "yes", "latitude": 38.72,
         "longitude": -9.14, "description": "Test venue",
     })
@@ -146,6 +146,45 @@ def test_business_badge_is_textual_and_only_for_business_accounts():
     assert 'person["role"] == "business"' in source
     assert '"Bar"' in source
     assert 'caption("Bar")' in source
+
+
+def test_profile_been_to_combines_reviews_and_venue_posts_once_newest_first(profile_db):
+    anna = make_user(profile_db, "anna")
+    reviewed = make_venue(profile_db)
+    posted = make_venue(profile_db, "Posted Bar")
+    repeated = make_venue(profile_db, "Repeated Bar")
+
+    logic.submit_review(profile_db, anna, reviewed, 4, 3, 5,
+                        now="2026-01-01T10:00:00+00:00")
+    logic.create_post(profile_db, anna, posted, "At the bar",
+                      now="2026-01-02T10:00:00+00:00")
+    logic.submit_review(profile_db, anna, repeated, 3, 3, 3,
+                        now="2026-01-03T10:00:00+00:00")
+    logic.create_post(profile_db, anna, repeated, "Back again",
+                      now="2026-01-04T10:00:00+00:00")
+    logic.create_post(profile_db, anna, None, "Somewhere else", location_name="Other",
+                      now="2026-01-05T10:00:00+00:00")
+
+    profile = logic.get_profile(profile_db, anna, anna["id"])
+
+    assert [venue["id"] for venue in profile["been_to"]] == [repeated, posted, reviewed]
+
+
+def test_profile_bars_tab_still_lists_followed_venues(profile_db):
+    anna = make_user(profile_db, "anna")
+    followed = make_venue(profile_db, "Followed Bar")
+    visited = make_venue(profile_db, "Visited Bar")
+    logic.follow_venue(profile_db, anna, followed)
+    logic.create_post(profile_db, anna, visited, "Been here")
+
+    profile = logic.get_profile(profile_db, anna, anna["id"])
+
+    assert [venue["id"] for venue in profile["bars"]] == [followed]
+    assert [venue["id"] for venue in profile["been_to"]] == [visited]
+    app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+    assert 'st.tabs(["Friends", "Followers", "Following", "Bars", "Been to"])' in app_source
+    assert 'for venue in profile["bars"]' in app_source
+    assert 'for venue in profile["been_to"]' in app_source
 
 
 @pytest.mark.parametrize(("format_name", "file_name"), [("HEIF", "IMG_1234.HEIC"), ("WEBP", "avatar.webp")])

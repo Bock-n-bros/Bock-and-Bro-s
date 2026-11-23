@@ -879,6 +879,21 @@ def get_followed_venues(user_id):
                         "JOIN venues v ON v.id = f.venue_id WHERE f.user_id = ? ORDER BY v.name", (user_id,)))
 
 
+def get_visited_venues(user_id):
+    """Return venues reviewed or posted from, newest activity first."""
+    init_db()
+    return _rows(_query(
+        "SELECT v.id, v.name, v.neighbourhood, v.venue_type, "
+        "MAX(activity.activity_at) AS activity_at FROM venues v JOIN ("
+        "SELECT venue_id, updated_at AS activity_at FROM reviews WHERE user_id = ? "
+        "UNION ALL "
+        "SELECT venue_id, created_at AS activity_at FROM posts "
+        "WHERE user_id = ? AND venue_id IS NOT NULL"
+        ") activity ON activity.venue_id = v.id "
+        "GROUP BY v.id, v.name, v.neighbourhood, v.venue_type "
+        "ORDER BY MAX(activity.activity_at) DESC, v.id", (user_id, user_id)))
+
+
 def count_venue_followers(venue_id):
     """Count users following a venue."""
     return _query("SELECT COUNT(*) FROM venue_follows WHERE venue_id = ?", (venue_id,)).fetchone()[0]

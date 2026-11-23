@@ -1,5 +1,16 @@
 # Bock'n Bros
 
+**Live app:** https://bock-and-bro-s-my5ajrqkm8u4d8ktttycsl.streamlit.app/
+
+## Team
+
+| Name | Student number |
+|---|---|
+| Siri Louise Lien | 81526 |
+| Jakob Kalvatn | 81223 |
+| Mathias Riberg Lona | 69679 |
+| Sander Montero Foss| 83916 |
+
 Bock'n Bros helps people find Lisbon bars and cafes and meet up for a beer.
 
 ## Install and run

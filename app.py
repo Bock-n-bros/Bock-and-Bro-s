@@ -1074,7 +1074,7 @@ def show_profile(user, profile_id):
             st.error(result.message)
         message_col.button("Message", key="message-user", on_click=open_chat, args=(user, profile["id"]))
 
-    friends_tab, followers_tab, following_tab, bars_tab = st.tabs(["Friends", "Followers", "Following", "Bars"])
+    friends_tab, followers_tab, following_tab, bars_tab, been_to_tab = st.tabs(["Friends", "Followers", "Following", "Bars", "Been to"])
     with friends_tab:
         show_person_list(user, profile["friends"], "No friends yet. Friends are people who follow each other.", "friend")
     with followers_tab:
@@ -1088,6 +1088,14 @@ def show_profile(user, profile_id):
             name_col, button_col = st.columns([4, 1])
             name_col.write(f"{venue['name']} · {venue['neighbourhood']}")
             button_col.button("View", key=f"bar-{venue['id']}", on_click=open_venue, args=(venue["id"],))
+    with been_to_tab:
+        if not profile["been_to"]:
+            st.caption("No bars visited yet.")
+        for venue in profile["been_to"]:
+            name_col, button_col = st.columns([4, 1])
+            name_col.write(f"{venue['name']} · {venue['neighbourhood']}")
+            button_col.button("View", key=f"been-to-{venue['id']}",
+                              on_click=open_venue, args=(venue["id"],))
 
     st.subheader("Posts")
     show_post_list(user, logic.get_app_user_posts(profile["id"], user), "No posts yet.", "profile")
@@ -1245,6 +1253,10 @@ def show_post_form(user, key, venue_id=None):
             chosen_venue = None
     else:
         chosen_venue = venue_id
+    can_rate = logic.can_rate_from_post(user, chosen_venue)
+    previous_review = (
+        logic.get_customer_review(user["id"], chosen_venue) if can_rate else None
+    )
     with st.form(f"{key}-post-form", clear_on_submit=True):
         text = st.text_area("What's happening?", max_chars=logic.MAX_POST_LENGTH)
         photos = st.file_uploader(
@@ -1253,11 +1265,45 @@ def show_post_form(user, key, venue_id=None):
         people = {person["id"]: person["username"] for person in logic.get_app_group_candidates(user)}
         tagged = st.multiselect("Tag people (optional)", list(people), format_func=people.get,
                                 max_selections=logic.MAX_TAGS, placeholder="Search by username")
+        include_rating = False
+        rating = None
+        if can_rate:
+            st.markdown("**Rate this bar (optional)**")
+            include_rating = st.checkbox(
+                "Include a rating with this post", key=f"{key}-include-rating"
+            )
+            old = previous_review or {}
+            atmosphere = st.slider("Atmosphere", 1, 5, old.get("atmosphere") or 3,
+                                   key=f"{key}-post-atmosphere")
+            value = st.slider("Value for money", 1, 5, old.get("value") or 3,
+                              key=f"{key}-post-value")
+            quality = st.slider("Quality", 1, 5, old.get("quality") or 3,
+                                key=f"{key}-post-quality")
+            old_price = old.get("super_bock_price")
+            price_given = st.checkbox(
+                "Add Super Bock price", value=old_price is not None,
+                key=f"{key}-post-price-given",
+            )
+            price = st.number_input(
+                "Super Bock price (€)", min_value=0.0, max_value=10.0,
+                value=float(old_price or 0.5), step=0.1, key=f"{key}-post-price",
+            )
+            comment = st.text_area(
+                "Comment", value=old.get("comment") or "", max_chars=500,
+                key=f"{key}-post-comment",
+            )
+            if include_rating:
+                rating = {
+                    "atmosphere": atmosphere, "value": value, "quality": quality,
+                    "super_bock_price": price if price_given else None,
+                    "comment": comment,
+                }
         submitted = st.form_submit_button("Post", type="primary")
     if submitted:
         uploads = [(photo.getvalue(), photo.name) for photo in photos or []]
         result = logic.create_app_post(user, chosen_venue, text,
-                                       location_name=other_location, images=uploads, tagged_user_ids=tagged)
+                                       location_name=other_location, images=uploads,
+                                       tagged_user_ids=tagged, rating=rating)
         if result.success:
             st.toast(result.message)
         else:

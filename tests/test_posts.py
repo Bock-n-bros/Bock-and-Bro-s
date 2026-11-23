@@ -1,7 +1,9 @@
 """Tests for posts with photos, the feed and posts on venue and profile pages."""
 
+import ast
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -85,6 +87,106 @@ def test_text_only_and_photo_only_posts_work_and_webp_is_accepted(post_db):
     webp_result = logic.create_post(post_db, anna, park, "", image_bytes("WEBP"), "pic.webp")
     assert webp_result.success
     assert post_db.count_posts() == 3
+
+
+def test_post_with_full_rating_saves_a_review(post_db):
+    anna = make_user(post_db, "anna")
+    venue_id = make_venue(post_db)
+    rating = {
+        "atmosphere": 5, "value": 4, "quality": 3,
+        "super_bock_price": 2.25, "comment": "Great night",
+    }
+
+    result = logic.create_post(post_db, anna, venue_id, "Great bar", rating=rating)
+
+    saved_review = post_db.get_user_review(anna["id"], venue_id)
+    assert result.success
+    assert post_db.count_posts() == 1
+    assert post_db.count_reviews(venue_id) == 1
+    assert {key: saved_review[key] for key in rating} == rating
+
+
+def test_second_rated_post_updates_the_existing_review(post_db):
+    anna = make_user(post_db, "anna")
+    venue_id = make_venue(post_db)
+    first = {"atmosphere": 2, "value": 3, "quality": 4,
+             "super_bock_price": 1.5, "comment": "First"}
+    second = {"atmosphere": 5, "value": 4, "quality": 5,
+              "super_bock_price": 2.0, "comment": "Updated"}
+
+    assert logic.create_post(post_db, anna, venue_id, "First", rating=first,
+                             now=at(1)).success
+    assert logic.create_post(post_db, anna, venue_id, "Second", rating=second,
+                             now=at(2)).success
+
+    saved = post_db.get_user_review(anna["id"], venue_id)
+    assert post_db.count_posts() == 2
+    assert post_db.count_reviews(venue_id) == 1
+    assert {key: saved[key] for key in second} == second
+
+
+@pytest.mark.parametrize("rating", [
+    {"atmosphere": 0, "value": 3, "quality": 3,
+     "super_bock_price": 2.0, "comment": "Invalid score"},
+    {"atmosphere": 3, "value": 3, "quality": 3,
+     "super_bock_price": 0.2, "comment": "Invalid price"},
+])
+def test_invalid_post_rating_saves_neither_post_nor_review(post_db, rating):
+    anna = make_user(post_db, "anna")
+    venue_id = make_venue(post_db)
+
+    result = logic.create_post(post_db, anna, venue_id, "Should not save", rating=rating)
+
+    assert not result.success
+    assert post_db.count_posts() == 0
+    assert post_db.count_reviews(venue_id) == 0
+
+
+def test_empty_rating_saves_only_the_post_and_other_location_cannot_be_rated(post_db):
+    anna = make_user(post_db, "anna")
+    venue_id = make_venue(post_db)
+
+    result = logic.create_post(post_db, anna, venue_id, "No rating")
+    other = logic.create_post(post_db, anna, None, "Other place", location_name="Other",
+                              rating={"atmosphere": 4, "value": 4, "quality": 4})
+
+    assert result.success
+    assert not other.success
+    assert post_db.count_posts() == 1
+    assert post_db.count_reviews(venue_id) == 0
+
+
+def test_bar_owner_cannot_rate_from_a_post(post_db):
+    owner = make_user(post_db, "owner", role="business")
+    venue_id = make_venue(post_db)
+
+    result = logic.create_post(
+        post_db, owner, venue_id, "Owner post",
+        rating={"atmosphere": 4, "value": 4, "quality": 4},
+    )
+
+    assert not result.success
+    assert post_db.count_posts() == 0
+    assert post_db.count_reviews(venue_id) == 0
+    app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+    assert "if can_rate:" in app_source
+
+
+def test_post_rating_form_is_limited_to_customers_with_a_venue():
+    assert logic.can_rate_from_post({"id": 1, "role": "customer"}, 4)
+    assert not logic.can_rate_from_post({"id": 2, "role": "business"}, 4)
+    assert not logic.can_rate_from_post({"id": 1, "role": "customer"}, None)
+
+    app_source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
+    tree = ast.parse(app_source)
+    post_form = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "show_post_form")
+    source = ast.get_source_segment(app_source, post_form)
+    assert "if can_rate:" in source
+    assert 'st.markdown("**Rate this bar (optional)**")' in source
+    assert 'st.slider("Atmosphere"' in source
+    assert 'st.slider("Value for money"' in source
+    assert 'st.slider("Quality"' in source
 
 
 @pytest.mark.parametrize(

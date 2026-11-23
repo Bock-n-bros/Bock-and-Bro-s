@@ -608,9 +608,9 @@ def find_venues(database, neighbourhood="All", venue_type="All", shows_football=
     return sort_venues(matches, database, sort_by)
 
 
-def submit_review(database, user, venue_id, atmosphere, value, quality,
-                  super_bock_price=None, comment=None, now=None):
-    """Check review permission and input, then save or update the review."""
+def validate_review_input(database, user, venue_id, atmosphere, value, quality,
+                          super_bock_price=None, comment=None):
+    """Apply the review permission and field rules without saving anything."""
     if not isinstance(user, dict) or user.get("role") != "customer" or not user.get("id"):
         return ReviewResult(False, "Only logged-in customers can submit reviews.")
     if database.get_venue_by_id(venue_id) is None:
@@ -625,6 +625,19 @@ def submit_review(database, user, venue_id, atmosphere, value, quality,
     if comment is not None:
         if not isinstance(comment, str) or len(comment) > 500:
             return ReviewResult(False, "Comment must be 500 characters or fewer.")
+    return ReviewResult(True, "Review is valid.")
+
+
+def submit_review(database, user, venue_id, atmosphere, value, quality,
+                  super_bock_price=None, comment=None, now=None):
+    """Check review permission and input, then save or update the review."""
+    result = validate_review_input(database, user, venue_id, atmosphere, value, quality,
+                                  super_bock_price, comment)
+    if not result.success:
+        return result
+    if super_bock_price is not None:
+        super_bock_price = round(float(super_bock_price), 2)
+    if comment is not None:
         comment = comment.strip() or None
     database.save_review(venue_id, user["id"], {
         "atmosphere": atmosphere, "value": value, "quality": quality,
@@ -1265,6 +1278,7 @@ def get_profile(database, viewer, user_id):
         "followers": followers,
         "following": following,
         "bars": database.get_followed_venues(user_id),
+        "been_to": database.get_visited_venues(user_id),
     }
 
 
@@ -1350,8 +1364,13 @@ def get_app_venue_follow_status(user, venue_id):
     return get_venue_follow_status(db, user, venue_id)
 
 
+def can_rate_from_post(user, venue_id):
+    """Return whether a post can include a rating for a listed venue."""
+    return _is_logged_in(user) and user.get("role") == "customer" and venue_id is not None
+
+
 def create_post(database, user, venue_id, text, image_bytes=None, image_name=None, now=None,
-                location_name=None, images=None, tagged_user_ids=None):
+                location_name=None, images=None, tagged_user_ids=None, rating=None):
     """Check permission and input, then save a post tied to a venue or a typed-in location.
 
     `images` is a list of (bytes, filename) pairs for a post with several photos.
@@ -1383,6 +1402,18 @@ def create_post(database, user, venue_id, text, image_bytes=None, image_name=Non
         return PostResult(False, f"A post can have at most {MAX_POST_PHOTOS} photos.")
     if not text and not photos:
         return PostResult(False, "Add some text or a photo.")
+    if rating is not None:
+        if not can_rate_from_post(user, venue_id):
+            return PostResult(False, "Only customers can rate a listed venue from a post.")
+        if not isinstance(rating, dict):
+            return PostResult(False, "Enter complete rating details.")
+        validation = validate_review_input(
+            database, user, venue_id,
+            rating.get("atmosphere"), rating.get("value"), rating.get("quality"),
+            rating.get("super_bock_price"), rating.get("comment"),
+        )
+        if not validation.success:
+            return PostResult(False, validation.message)
     tagged_user_ids = list(dict.fromkeys(tagged_user_ids or []))
     if len(tagged_user_ids) > MAX_TAGS:
         return PostResult(False, f"You can tag at most {MAX_TAGS} people.")
@@ -1395,11 +1426,22 @@ def create_post(database, user, venue_id, text, image_bytes=None, image_name=Non
                                        location_name=location_name, images=photos)
     except ValueError as error:
         return PostResult(False, str(error))
+    message = "Posted!"
+    if rating is not None:
+        review_result = submit_review(
+            database, user, venue_id,
+            rating["atmosphere"], rating["value"], rating["quality"],
+            rating.get("super_bock_price"), rating.get("comment"), now=now,
+        )
+        if not review_result.success:
+            database.delete_post(post_id)
+            return PostResult(False, review_result.message)
+        message = "Posted! Review saved."
     if tagged_user_ids:
         database.add_post_tags(post_id, tagged_user_ids)
         for tagged_id in tagged_user_ids:
             notify(database, tagged_id, user, "tag", post_id=post_id, now=now)
-    return PostResult(True, "Posted!", post_id)
+    return PostResult(True, message, post_id)
 
 
 def get_feed(database, user):
@@ -1716,10 +1758,11 @@ def format_post_time(timestamp):
 
 
 def create_app_post(user, venue_id, text, image_bytes=None, image_name=None,
-                    location_name=None, images=None, tagged_user_ids=None):
+                    location_name=None, images=None, tagged_user_ids=None, rating=None):
     """Create a post through the configured database."""
     return create_post(db, user, venue_id, text, image_bytes, image_name,
-                       location_name=location_name, images=images, tagged_user_ids=tagged_user_ids)
+                       location_name=location_name, images=images,
+                       tagged_user_ids=tagged_user_ids, rating=rating)
 
 
 def get_app_feed(user):

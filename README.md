@@ -8,7 +8,7 @@
 |---|---|
 | Siri Louise Lien | 81526 |
 | Jakob Kalvatn | 81223 |
-| Mathias Riberg Lona | 69679 |
+| Mathias Riborg Lona | 69679 |
 | Sander Montero Foss| 83916 |
 
 ## About

@@ -367,8 +367,8 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** message excerpts, app-layer SMTP calls, notifications for opted-out users or a separate cooldown for every sender.
 - **Where:** `db.py`, `logic.py`, `mail.py`, `app.py`, `specs/10-notifications.md` and `.streamlit/secrets.toml.example`.
 
-### D-069 · Tables are created once per run, not on every query
-*18 Nov 2026 · Supabase performance · renumbered 22 Nov 2026, it was a second D-046*
+### D-084 · Tables are created once per run, not on every query
+*18 Nov 2026 · Supabase performance · renumbered 23 Nov 2026 in a merge; it was a second D-046, and D-069 was taken on main*
 
 - **What:** `init_db()` remembers which database it has already prepared and returns immediately on later calls.
 - **Why:** on Supabase every CREATE/ALTER statement is a network round trip; with init_db called from many read functions, the map page sent hundreds of them and became very slow.
@@ -465,6 +465,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** creating rows inline in the Streamlit screen, where the conversion is harder to test.
 - **Where:** `logic.py`, `app.render_map` and `tests/test_map.py`.
 
+
 ## In-app notifications and tagging (spec 14)
 
 ### D-066 · Pop-ups are Streamlit toasts checked every 10 seconds
@@ -491,11 +492,68 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** an email for every event.
 - **Where:** `logic._email_alert`, `alerts.emailed_at`.
 
+### D-069 · Users choose which notifications they get by email
+*19 Nov 2026 · spec 14*
+
+- **What:** My profile has "Send me emails" plus six choices: likes/comments, tags, group invites, new meetups, messages and Notify bro. Stored as `users.email_categories` (comma list; empty = none; not set = all, so nothing changes for existing users). Creating a meetup now notifies the group (new kind `event`). The fixed list of kinds in the `alerts` table was removed (checked in `logic.py` instead) so new kinds need no migration.
+- **Why:** people want e.g. meetups and messages by email, but not every like.
+- **Instead of:** one on/off switch for all email.
+- **Where:** `logic.EMAIL_CATEGORIES`, `logic.wants_email`, `db._ensure_email_categories_column`, `db._drop_alert_kind_check`, `app.py` profile form.
+
+### D-070 · Main sections use Streamlit top navigation — Replaced by D-074
+
+- **What:** Feed, Venues, People, Messages and Profile are registered as icon pages with `st.navigation(position="top")`; the sidebar holds account details and logout.
+- **Why:** the same five destinations stay visible as a clear app menu while account controls remain easy to find.
+- **Instead of:** switching screens through a sidebar radio control.
+- **Where:** `app.py` `NAV_PAGES` and the navigation shell.
+
+### D-071 · Detail navigation uses URL IDs and a session history stack
+
+- **What:** venue, profile, post and chat detail IDs live in query parameters; a session stack stores the source page and query state for Back.
+- **Why:** shared URLs, refresh and browser history retain the selected detail while Back can restore the original list or previous detail.
+- **Instead of:** session-only selected IDs and a fixed return destination.
+- **Where:** `logic.build_detail_query`, `logic.parse_detail_id`, `app.open_detail`, detail routes and `tests/test_navigation.py`.
+
+### D-072 · Venue and profile links share URL builders
+
+- **What:** venue and profile links use shared query helpers with a lowercase source value; post headers render these URLs as inline text links.
+- **Why:** names remain readable links and every route carries the same detail ID and return source.
+- **Instead of:** separate button callbacks and URL formats in feed, reviews, comments and messages.
+- **Where:** `logic.venue_link_params`, `logic.profile_link_params`, `app.detail_text_link` and `app.show_post`.
+
+### D-073 · Map pins open a preview before venue details
+
+- **What:** selecting a pin stores its ID for a compact preview; only “View bar” opens the venue URL, and the preview ID stays in session state for Back.
+- **Why:** map exploration does not navigate away and returning restores the selected venue context.
+- **Instead of:** opening a full venue card immediately when a pin is selected.
+- **Where:** `logic.map_preview_selection`, `app.render_map`, `app.render_venue_card` and `tests/test_navigation.py`.
+
+### D-074 · Main sections use Streamlit sidebar navigation
+
+- **What:** the five icon pages appear in the sidebar after the account identity; the logo comes first and logout stays at the bottom.
+- **Why:** the app keeps its familiar left-side navigation and the account controls remain grouped above the page list.
+- **Instead of:** top navigation and red styling on Streamlit's header.
+- **Where:** `app.py` navigation shell, `styles.py` and `tests/test_navigation.py`.
+
+### D-075 · Internal detail links use same-tab buttons
+
+- **What:** venue and profile names render as text-style buttons that set query and session state before switching pages; external map links remain links.
+- **Why:** internal navigation stays in the current browser tab while preserving detail URLs and Back behavior.
+- **Instead of:** HTML anchors or `st.link_button` for app pages.
+- **Where:** `app.detail_text_link`, `app.open_venue`, `app.open_profile` and `tests/test_navigation.py`.
+
+### D-076 · Detail IDs travel with Streamlit page switches
+
+- **What:** detail navigation passes its query parameters directly to `st.switch_page`.
+- **Why:** Streamlit page switches otherwise drop the venue or profile ID before the destination renders.
+- **Instead of:** relying on the browser URL alone to carry detail state across a page switch.
+- **Where:** `app.open_detail`, `app.go_back_from_detail`, `app.redirect_detail_to_owner` and `tests/test_navigation.py`.
+
 ---
 
 ## Deleting your own post (spec 11)
 
-### D-070 · Only the author may delete a post, and deleting is permanent
+### D-077 · Only the author may delete a post, and deleting is permanent
 *19 Nov 2026 · spec 11 (recorded 22 Nov 2026)*
 
 - **What:** `logic.delete_post` refuses a logged-out user, an unknown post and anyone who is not the author, each with its own message. There is no soft delete, no bin and no undo; the screen asks for confirmation per post before calling it.
@@ -503,7 +561,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** moderation or reporting so others can delete a post; an undo window; editing a published post.
 - **Where:** `logic.delete_post`, the confirmation state in `app.py`, `specs/11-delete-posts.md`.
 
-### D-071 · Deleting a post takes its comments, likes and unused photo with it
+### D-078 · Deleting a post takes its comments, likes and unused photo with it
 *19 Nov 2026 · spec 11 (recorded 22 Nov 2026)*
 
 - **What:** `db.delete_post` removes comments, then likes, then the post, in one connection, and afterwards `_delete_unused_image` removes the photo only when no other post and no profile picture still points at it.
@@ -515,7 +573,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 
 ## A bar's own menu and opening hours (spec 13)
 
-### D-072 · One bar account manages at most one venue, and a venue has at most one bar account
+### D-079 · One bar account manages at most one venue, and a venue has at most one bar account
 *19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
 
 - **What:** `venue_owners` is unique on both `venue_id` and `user_id`. A bar claims a free venue and can release it, which frees it for another account.
@@ -523,7 +581,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** a chain of several venues per account, or first-come ownership with no way out.
 - **Where:** `db.claim_venue`, `db.release_venue`, `logic.claim_app_venue`, `specs/13-bar-menu-and-hours.md`.
 
-### D-073 · Every menu and hours change is checked against ownership in `logic.py`
+### D-080 · Every menu and hours change is checked against ownership in `logic.py`
 *19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
 
 - **What:** customers, logged-out visitors and other bar accounts are refused on every add, change and delete, not only by hiding the editor.
@@ -531,7 +589,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** checking only when the editor is drawn.
 - **Where:** `logic.can_manage_app_venue` and the menu and hours rules in `logic.py`.
 
-### D-074 · Menu items: 1–60 characters, €0.10–€500.00, at most 60 per venue
+### D-081 · Menu items: 1–60 characters, €0.10–€500.00, at most 60 per venue
 *19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
 
 - **What:** names are trimmed and bounded, prices rounded to cents, and a venue cannot pass 60 items. Names are shown with `st.text`, as for reviews and comments.
@@ -539,7 +597,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** free-form prices and an unbounded list.
 - **Where:** `logic._check_menu_input`, `logic.add_menu_item`.
 
-### D-075 · A closing time before the opening time means past midnight; identical times are refused
+### D-082 · A closing time before the opening time means past midnight; identical times are refused
 *19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
 
 - **What:** 16:00–02:00 is saved as written. Only an opening time equal to the closing time is rejected.
@@ -547,7 +605,7 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** requiring closing after opening, or asking the bar to tick a separate "past midnight" box.
 - **Where:** `logic.set_venue_hours`, `logic._clock_text`.
 
-### D-076 · A weekday with nothing saved reads "Not set", never "Closed"
+### D-083 · A weekday with nothing saved reads "Not set", never "Closed"
 *19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
 
 - **What:** a weekday the bar has not filled in shows "Not set"; "Closed" only appears when the bar ticked the box.

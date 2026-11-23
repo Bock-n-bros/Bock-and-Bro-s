@@ -155,6 +155,69 @@ def build_map_rows(venues, summaries, minimum_rating="All"):
     return rows
 
 
+DETAIL_QUERY_KEYS = {"venue": "venue", "profile": "user", "post": "post", "chat": "chat"}
+PAGE_SOURCE_VALUES = {
+    "Feed": "feed", "Venues": "venues", "People": "people",
+    "Messages": "messages", "Profile": "profile", "Notifications": "notifications",
+}
+
+
+def build_detail_query(detail_type, item_id, source=None):
+    """Build query parameters for a shareable detail page."""
+    if detail_type not in DETAIL_QUERY_KEYS or not str(item_id).isdigit():
+        raise ValueError("Unknown detail type or invalid id")
+    query = {DETAIL_QUERY_KEYS[detail_type]: str(int(item_id))}
+    if source:
+        query["from"] = str(source)
+    return query
+
+
+def venue_link_params(venue_id, source):
+    """Build the shared query parameters for a venue link."""
+    query = build_detail_query("venue", venue_id)
+    query["from"] = PAGE_SOURCE_VALUES.get(source, str(source).casefold())
+    return query
+
+
+def profile_link_params(user_id, source):
+    """Build the shared query parameters for a profile link."""
+    query = build_detail_query("profile", user_id)
+    query["from"] = PAGE_SOURCE_VALUES.get(source, str(source).casefold())
+    return query
+
+
+def map_preview_selection(selected_objects, visible_ids, previous_id=None):
+    """Return a visible selected pin id, preserving its preview when possible."""
+    if selected_objects:
+        selected_id = selected_objects[0].get("id")
+        if selected_id in visible_ids:
+            return selected_id
+    return previous_id if previous_id in visible_ids else None
+
+
+def parse_detail_id(params, detail_type):
+    """Parse a positive detail id from query parameters, or return None."""
+    key = DETAIL_QUERY_KEYS.get(detail_type)
+    if key is None:
+        return None
+    value = params.get(key)
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    try:
+        item_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return item_id if item_id > 0 else None
+
+
+def parse_return_page(params, allowed_pages, default_page):
+    """Return a valid source page from query parameters or its default."""
+    source = params.get("from")
+    if isinstance(source, str):
+        source = {value: page for page, value in PAGE_SOURCE_VALUES.items()}.get(source, source)
+    return source if source in allowed_pages else default_page
+
+
 def map_style_url(name):
     """Return the Mapbox style URL for a named map style."""
     return MAP_STYLES.get(name, MAP_STYLES["Light"])
@@ -439,6 +502,7 @@ def review_preview(reviews, now=None):
     preview = []
     for review in reviews[:3]:
         preview.append({
+            "user_id": review.get("user_id"),
             "username": review["username"],
             "rating": review_rating(review),
             "comment": (review.get("comment") or "").strip()[:140],
@@ -824,6 +888,8 @@ def create_event(database, user, conversation_id, venue_id, title, starts_at,
         return EventResult(False, "Choose a valid date and time.")
     event_id = database.add_event(conversation_id, venue_id, title.strip(), start,
                                   max_attendees, user["id"], now=now)
+    for member in database.get_conversation_members(conversation_id):
+        notify(database, member["id"], user, "event", conversation_id=conversation_id, now=now)
     return EventResult(True, "Meetup created.", event_id)
 
 
@@ -909,7 +975,7 @@ def _send_notification(database, sender, conversation, recipient_id, subject, de
     recipient = database.get_email_notification_settings(recipient_id)
     if recipient is None:
         return "missing"
-    if not recipient["email_notifications"]:
+    if not wants_email(recipient, "notify_bro"):
         return "disabled"
     remaining = _notification_cooldown(database, conversation["id"], recipient_id, now)
     if remaining is not None:
@@ -1799,7 +1865,18 @@ def toggle_app_like(user, post_id):
 # In-app notifications ("alerts") with optional email (spec 14)
 # ---------------------------------------------------------------------------
 
-ALERT_KINDS = ("like", "comment", "tag", "group_added", "message")
+ALERT_KINDS = ("like", "comment", "tag", "group_added", "event", "message")
+# What users can choose to get by email (My profile). Stored as a comma list; NULL = all.
+EMAIL_CATEGORIES = {
+    "posts": "Likes and comments on my posts",
+    "tags": "When someone tags me in a post",
+    "groups": "When someone adds me to a group",
+    "meetups": "New meetups in my groups",
+    "messages": "New messages",
+    "notify_bro": "Notify bro reminders",
+}
+ALERT_EMAIL_CATEGORY = {"like": "posts", "comment": "posts", "tag": "tags", "group_added": "groups",
+                        "event": "meetups", "message": "messages"}
 # Kinds that get at most one email per hour for the same post or conversation, so a busy
 # post or chat does not flood the inbox. Tags and group invites are emailed every time.
 _THROTTLED_EMAIL_KINDS = {"like", "comment", "message"}
@@ -1832,6 +1909,8 @@ def alert_text(alert):
         return f"{actor} tagged you in a post"
     if alert["kind"] == "group_added":
         return f"{actor} added you to {group}"
+    if alert["kind"] == "event":
+        return f"{actor} planned a meetup in {group}"
     if alert.get("is_group"):
         return f"{actor} sent a message in {group}"
     return f"{actor} sent you a message"
@@ -1867,7 +1946,7 @@ def _email_alert(database, alert_id, recipient_id, actor, kind, post_id, convers
     if not mail.smtp_configured():
         return False
     settings = database.get_email_notification_settings(recipient_id)
-    if settings is None or not settings["email_notifications"]:
+    if not wants_email(settings, ALERT_EMAIL_CATEGORY[kind]):
         return False
     current = _utc(now)
     if kind in _THROTTLED_EMAIL_KINDS:
@@ -1939,3 +2018,45 @@ def count_app_unread_alerts(user):
 def mark_app_alerts_read(user):
     """Mark notifications read through the configured database."""
     mark_alerts_read(db, user)
+
+
+def parse_email_categories(text):
+    """Turn the stored comma list into a set; None (never saved) means every category."""
+    if text is None:
+        return set(EMAIL_CATEGORIES)
+    return {item for item in text.split(",") if item in EMAIL_CATEGORIES}
+
+
+def wants_email(settings, category):
+    """Return whether a user's settings allow an email of this category."""
+    return bool(settings and settings["email_notifications"]
+                and category in parse_email_categories(settings.get("email_categories")))
+
+
+def get_email_categories(database, user):
+    """Return the categories the signed-in user gets by email."""
+    if not _is_logged_in(user):
+        return set()
+    return parse_email_categories(database.get_email_categories(user["id"]))
+
+
+def set_email_categories(database, user, categories):
+    """Save which categories the signed-in user wants by email."""
+    if not _is_logged_in(user):
+        return NotificationResult(False, "Log in to change notification settings.")
+    categories = list(categories or [])
+    if any(category not in EMAIL_CATEGORIES for category in categories):
+        return NotificationResult(False, "Unknown notification type.")
+    chosen = [category for category in EMAIL_CATEGORIES if category in categories]
+    database.set_email_categories(user["id"], ",".join(chosen))
+    return NotificationResult(True, "Notification settings saved.")
+
+
+def get_app_email_categories(user):
+    """Read email categories through the configured database."""
+    return get_email_categories(db, user)
+
+
+def set_app_email_categories(user, categories):
+    """Save email categories through the configured database."""
+    return set_email_categories(db, user, categories)

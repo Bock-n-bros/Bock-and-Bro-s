@@ -241,7 +241,7 @@ def _table_statements(backend):
         f"""CREATE TABLE IF NOT EXISTS alerts (
             id {identity}, recipient_id INTEGER NOT NULL REFERENCES users(id),
             actor_id INTEGER NOT NULL REFERENCES users(id),
-            kind TEXT NOT NULL CHECK (kind IN ('like', 'comment', 'tag', 'group_added', 'message')),
+            kind TEXT NOT NULL,
             post_id INTEGER REFERENCES posts(id), conversation_id INTEGER REFERENCES conversations(id),
             created_at TEXT NOT NULL, read_at TEXT, toasted INTEGER NOT NULL DEFAULT 0 CHECK (toasted IN (0, 1)),
             emailed_at TEXT
@@ -272,6 +272,8 @@ def init_db():
         _ensure_user_image_column(connection, backend)
         _ensure_email_notifications_column(connection, backend)
         _ensure_post_location_column(connection, backend)
+        _ensure_email_categories_column(connection, backend)
+        _drop_alert_kind_check(connection, backend)
         _ensure_post_images_backfill(connection, backend)
     _initialized_key = (backend, setting)
 
@@ -299,6 +301,33 @@ def _ensure_email_notifications_column(connection, backend):
     if "email_notifications" not in columns:
         _execute(connection, backend,
             "ALTER TABLE users ADD COLUMN email_notifications INTEGER NOT NULL DEFAULT 1 CHECK (email_notifications IN (0, 1))")
+
+
+def _ensure_email_categories_column(connection, backend):
+    """Add the per-category email choice; NULL means every category (the default)."""
+    if backend == "sqlite":
+        columns = {row[1] for row in _execute(connection, backend, "PRAGMA table_info(users)").fetchall()}
+    else:
+        columns = {row[0] for row in _execute(connection, backend,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = ?", ("users",)).fetchall()}
+    if "email_categories" not in columns:
+        _execute(connection, backend, "ALTER TABLE users ADD COLUMN email_categories TEXT")
+
+
+def _drop_alert_kind_check(connection, backend):
+    """Remove the first version's fixed list of alert kinds; logic.py now checks the kind."""
+    if backend == "postgres":
+        _execute(connection, backend, "ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_kind_check")
+        return
+    row = _execute(connection, backend, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alerts'").fetchone()
+    if row and "CHECK (kind" in row[0]:
+        # SQLite cannot drop a CHECK in place, so the table is copied into the new shape once.
+        new_sql = [sql for sql in _table_statements(backend) if "CREATE TABLE IF NOT EXISTS alerts" in sql][0]
+        _execute(connection, backend, "ALTER TABLE alerts RENAME TO alerts_old")
+        _execute(connection, backend, new_sql)
+        _execute(connection, backend, "INSERT INTO alerts SELECT * FROM alerts_old")
+        _execute(connection, backend, "DROP TABLE alerts_old")
 
 
 def _ensure_post_location_column(connection, backend):
@@ -538,9 +567,20 @@ def get_user_by_id(user_id):
 
 
 def get_email_notification_settings(user_id):
-    """Return a user's private email address and notification preference."""
-    row = _query("SELECT email, email_notifications FROM users WHERE id = ?", (user_id,)).fetchone()
-    return _row_dict(row, ("email", "email_notifications"))
+    """Return a user's private email address and notification preferences."""
+    row = _query("SELECT email, email_notifications, email_categories FROM users WHERE id = ?", (user_id,)).fetchone()
+    return _row_dict(row, ("email", "email_notifications", "email_categories"))
+
+
+def get_email_categories(user_id):
+    """Return the stored email categories text (None means all categories)."""
+    row = _query("SELECT email_categories FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row[0] if row else None
+
+
+def set_email_categories(user_id, categories_text):
+    """Save which kinds of notifications the user wants by email."""
+    _query("UPDATE users SET email_categories = ? WHERE id = ?", (categories_text, user_id))
 
 
 def get_email_notifications(user_id):

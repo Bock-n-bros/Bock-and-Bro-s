@@ -11,7 +11,40 @@
 | Mathias Riberg Lona | 69679 |
 | Sander Montero Foss| 83916 |
 
-Bock'n Bros helps people find Lisbon bars and cafes and meet up for a beer.
+## About
+
+Bock'n Bros is a web app for finding bars in Lisbon and meeting friends for a Super Bock.
+Customers can see bars on a map with ratings, Super Bock prices, opening hours and live
+weather, write reviews, post photos, follow friends and bars, chat, and plan meetups in
+groups. Bar owners manage their own bar's menu and opening hours and can notify their
+followers.
+
+## Objectives
+
+- Show what a beer actually costs and how people rate each bar, in one place.
+- Make it easy to plan a night out with friends, from finding a bar to agreeing on a time.
+- Give bars a simple way to reach the people who follow them.
+- Build it as a deployed multi-user app with shared data, roles, external APIs and tests.
+
+## Features
+
+- Google login, with two roles: customer and bar owner
+- Map of Lisbon bars (Mapbox), coloured by rating
+- Venue pages with reviews, menu, opening hours and live weather (Open-Meteo and IPMA)
+- Feed with photo posts, likes, comments and tags
+- Follows, profiles, direct messages, group chats and meetups
+- In-app and email notifications
+- Shared Supabase Postgres database, SQLite for local use and tests
+
+## Project structure
+
+- `app.py`: Streamlit screens
+- `logic.py`: rules, validation and permissions (no Streamlit, no SQL)
+- `db.py`: all database code (SQLite locally, Supabase Postgres when deployed)
+- `weather.py`, `mail.py`: weather APIs and email notifications
+- `tests/`: pytest tests, run with `uv run pytest`
+- `specs/`: one spec per feature
+- `docs/DECISIONS.md`: why we built things the way we did
 
 ## Install and run
 

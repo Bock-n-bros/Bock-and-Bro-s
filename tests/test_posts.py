@@ -409,6 +409,27 @@ def test_deleting_a_post_removes_its_comments_and_likes(post_db):
     assert post_db.count_likes(post_id) == 0
 
 
+def test_deleting_a_post_removes_its_tags_and_notifications(post_db):
+    writer = make_user(post_db, "writer")
+    reader = make_user(post_db, "reader")
+    friend = make_user(post_db, "friend")
+    venue_id = make_venue(post_db)
+    post_id = logic.create_post(post_db, writer, venue_id, "Tag along",
+                                tagged_user_ids=[friend["id"]]).post_id
+    logic.toggle_like(post_db, reader, post_id)
+    assert post_db.get_tags_for_posts([post_id]) != []
+    assert post_db.find_alert(friend["id"], "tag", post_id=post_id) is not None
+    assert post_db.find_alert(writer["id"], "like", post_id=post_id) is not None
+
+    assert logic.delete_post(post_db, writer, post_id).success
+
+    # Postgres refuses to delete a post these rows still point at, while SQLite does not
+    # check foreign keys at all, so the rows are checked here instead of the database.
+    assert post_db.get_tags_for_posts([post_id]) == []
+    assert post_db.find_alert(friend["id"], "tag", post_id=post_id) is None
+    assert post_db.find_alert(writer["id"], "like", post_id=post_id) is None
+
+
 def test_deleting_a_post_removes_its_photo(post_db):
     writer = make_user(post_db, "writer")
     venue_id = make_venue(post_db)

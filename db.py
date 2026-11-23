@@ -1156,7 +1156,7 @@ def get_post_details(post_id):
 
 
 def delete_post(post_id):
-    """Delete a post with its comments and likes after logic has checked its author."""
+    """Delete a post with everything that points at it, after logic has checked its author."""
     backend, _ = _backend()
     with _connect() as connection:
         current = _execute(connection, backend,
@@ -1168,6 +1168,10 @@ def delete_post(post_id):
         _execute(connection, backend, "DELETE FROM comments WHERE post_id = ?", (post_id,))
         _execute(connection, backend, "DELETE FROM likes WHERE post_id = ?", (post_id,))
         _execute(connection, backend, "DELETE FROM post_images WHERE post_id = ?", (post_id,))
+        # post_tags and alerts hold foreign keys on the post (spec 14). Postgres refuses to
+        # delete the post while they exist; SQLite does not check, so this has to be explicit.
+        _execute(connection, backend, "DELETE FROM post_tags WHERE post_id = ?", (post_id,))
+        _execute(connection, backend, "DELETE FROM alerts WHERE post_id = ?", (post_id,))
         _execute(connection, backend, "DELETE FROM posts WHERE id = ?", (post_id,))
         for image_id in {current[0], *attached} - {None}:
             _delete_unused_image(connection, backend, image_id)

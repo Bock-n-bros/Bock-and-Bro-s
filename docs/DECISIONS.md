@@ -219,13 +219,6 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** showing UTC.
 - **Where:** `logic.format_message_time`.
 
-### D-054 · Venue weather combines independent public sources
-
-- **What:** venue cards show Open-Meteo forecasts and the nearest Lisbon IPMA station reading independently, cached for 15 minutes.
-- **Why:** customers can compare a forecast with a measured hourly observation, while a failed source never produces a guessed reading.
-- **Instead of:** relying on one provider or filling missing data with defaults.
-- **Where:** `weather.py`, weather rules in `logic.py`, venue cards in `app.py`.
-
 ## Following and profiles (spec 05)
 
 ### D-036 · Friends are mutual follows, not a separate friend request
@@ -374,13 +367,22 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Instead of:** message excerpts, app-layer SMTP calls, notifications for opted-out users or a separate cooldown for every sender.
 - **Where:** `db.py`, `logic.py`, `mail.py`, `app.py`, `specs/10-notifications.md` and `.streamlit/secrets.toml.example`.
 
-### D-046 · Tables are created once per run, not on every query
-*18 Nov 2026 · Supabase performance*
+### D-069 · Tables are created once per run, not on every query
+*18 Nov 2026 · Supabase performance · renumbered 22 Nov 2026, it was a second D-046*
 
 - **What:** `init_db()` remembers which database it has already prepared and returns immediately on later calls.
 - **Why:** on Supabase every CREATE/ALTER statement is a network round trip; with init_db called from many read functions, the map page sent hundreds of them and became very slow.
 - **Instead of:** checking all ten tables before every read.
 - **Where:** `db.init_db`.
+
+## Map, weather, theme and follow-up fixes
+
+### D-054 · Venue weather combines independent public sources
+
+- **What:** venue cards show Open-Meteo forecasts and the nearest Lisbon IPMA station reading independently, cached for 15 minutes.
+- **Why:** customers can compare a forecast with a measured hourly observation, while a failed source never produces a guessed reading.
+- **Instead of:** relying on one provider or filling missing data with defaults.
+- **Where:** `weather.py`, weather rules in `logic.py`, venue cards in `app.py`.
 
 ### D-055 · Compact map cards and venue pages share one renderer
 
@@ -488,3 +490,67 @@ Decisions already in the code from specs 01–03 (recorded 18 Nov 2026).
 - **Why:** keeps emails useful and private (same rule as Notify bro, D in spec 10).
 - **Instead of:** an email for every event.
 - **Where:** `logic._email_alert`, `alerts.emailed_at`.
+
+---
+
+## Deleting your own post (spec 11)
+
+### D-070 · Only the author may delete a post, and deleting is permanent
+*19 Nov 2026 · spec 11 (recorded 22 Nov 2026)*
+
+- **What:** `logic.delete_post` refuses a logged-out user, an unknown post and anyone who is not the author, each with its own message. There is no soft delete, no bin and no undo; the screen asks for confirmation per post before calling it.
+- **Why:** the author is the only person with a claim on their own post, and the check belongs in the rules rather than in a hidden button (D-009). A bin would mean a second "deleted" state in every query that reads posts.
+- **Instead of:** moderation or reporting so others can delete a post; an undo window; editing a published post.
+- **Where:** `logic.delete_post`, the confirmation state in `app.py`, `specs/11-delete-posts.md`.
+
+### D-071 · Deleting a post takes its comments, likes and unused photo with it
+*19 Nov 2026 · spec 11 (recorded 22 Nov 2026)*
+
+- **What:** `db.delete_post` removes comments, then likes, then the post, in one connection, and afterwards `_delete_unused_image` removes the photo only when no other post and no profile picture still points at it.
+- **Why:** leaving comments and likes behind would orphan rows that join against a post that no longer exists. Images are shared records (D-045), so deleting one blindly could blank out somebody's profile picture.
+- **Instead of:** deleting the image row with the post; leaving the comments and likes in place.
+- **Where:** `db.delete_post`, `db._delete_unused_image`.
+
+---
+
+## A bar's own menu and opening hours (spec 13)
+
+### D-072 · One bar account manages at most one venue, and a venue has at most one bar account
+*19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
+
+- **What:** `venue_owners` is unique on both `venue_id` and `user_id`. A bar claims a free venue and can release it, which frees it for another account.
+- **Why:** two accounts editing the same bar's prices would have no way to settle who is right, and the database enforces it even if the rules have a bug (same reasoning as D-008).
+- **Instead of:** a chain of several venues per account, or first-come ownership with no way out.
+- **Where:** `db.claim_venue`, `db.release_venue`, `logic.claim_app_venue`, `specs/13-bar-menu-and-hours.md`.
+
+### D-073 · Every menu and hours change is checked against ownership in `logic.py`
+*19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
+
+- **What:** customers, logged-out visitors and other bar accounts are refused on every add, change and delete, not only by hiding the editor.
+- **Why:** prices and opening times are what a customer trusts when deciding where to go; a hidden button is not security (D-009).
+- **Instead of:** checking only when the editor is drawn.
+- **Where:** `logic.can_manage_app_venue` and the menu and hours rules in `logic.py`.
+
+### D-074 · Menu items: 1–60 characters, €0.10–€500.00, at most 60 per venue
+*19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
+
+- **What:** names are trimmed and bounded, prices rounded to cents, and a venue cannot pass 60 items. Names are shown with `st.text`, as for reviews and comments.
+- **Why:** the same reasoning as D-010: bounds keep the page readable and stop a typo from turning into a €5000 beer. Plain text stops links and scripts being smuggled into a menu (D-012).
+- **Instead of:** free-form prices and an unbounded list.
+- **Where:** `logic._check_menu_input`, `logic.add_menu_item`.
+
+### D-075 · A closing time before the opening time means past midnight; identical times are refused
+*19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
+
+- **What:** 16:00–02:00 is saved as written. Only an opening time equal to the closing time is rejected.
+- **Why:** bars are the one kind of business that normally closes the next day, so the usual "end must be after start" rule would make the feature useless. Equal times say nothing at all.
+- **Instead of:** requiring closing after opening, or asking the bar to tick a separate "past midnight" box.
+- **Where:** `logic.set_venue_hours`, `logic._clock_text`.
+
+### D-076 · A weekday with nothing saved reads "Not set", never "Closed"
+*19 Nov 2026 · spec 13 (recorded 22 Nov 2026)*
+
+- **What:** a weekday the bar has not filled in shows "Not set"; "Closed" only appears when the bar ticked the box.
+- **Why:** same principle as D-011 — unknown is not the same as negative, and telling a customer a bar is closed when nobody said so would send them somewhere else.
+- **Instead of:** treating missing hours as closed, or as open.
+- **Where:** `logic.get_opening_hours`, the hours card in `app.py`.
